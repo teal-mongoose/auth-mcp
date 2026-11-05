@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/teal-mongoose/auth-mcp/internal/adminscreen"
 	"github.com/teal-mongoose/auth-mcp/internal/broker"
 	"github.com/teal-mongoose/auth-mcp/internal/devenv"
 	"github.com/teal-mongoose/auth-mcp/internal/fixtures"
@@ -140,17 +141,19 @@ func startTestApps() ([]*http.Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("test app %s: %w", app.ID, err)
 		}
-		testServer := &http.Server{
-			Handler: testapp.Handler(testapp.Config{
-				AppID:           app.ID,
-				Name:            app.Name,
-				ProjectID:       app.ProjectID,
-				AuthEmulatorURL: "http://" + hosts[app.ProjectID],
-				BrokerURL:       devenv.BaseURL,
-				RedirectURI:     redirectURI,
-			}),
-			ReadHeaderTimeout: 5 * time.Second,
+		config := testapp.Config{
+			AppID:           app.ID,
+			Name:            app.Name,
+			ProjectID:       app.ProjectID,
+			AuthEmulatorURL: "http://" + hosts[app.ProjectID],
+			BrokerURL:       devenv.BaseURL,
+			RedirectURI:     redirectURI,
 		}
+		handler := testapp.Handler(config)
+		if app.ID == fixtures.AppAdmin {
+			handler = adminscreen.Handler(adminscreen.Config(config))
+		}
+		testServer := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 		go func() { _ = testServer.Serve(listener) }()
 		servers = append(servers, testServer)
 	}

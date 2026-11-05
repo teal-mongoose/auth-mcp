@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Name}}</title>
+<link rel="stylesheet" href="/app.css">
+<script type="application/json" id="config">{{.}}</script>
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<header>
+  <h1>{{.Name}}</h1>
+  <div id="account"></div>
+</header>
+<nav id="nav" aria-label="Sections" hidden></nav>
+<p id="problem" role="alert" hidden></p>
+<main id="main"><p>Loading... This page needs internet access for the Firebase and MCP libraries.</p></main>
+</body>
+</html>

@@ -64,6 +64,12 @@ func Accounts() map[string][]Account {
 				UID: "seed-odd-claims", Email: "odd-claims@customer-a.test", Name: "Odd Claims User",
 				Claims: map[string]any{"admin": false, "password": "generic-hidden-value"},
 			},
+			{
+				// Screens must show this as text, not run it.
+				UID: "seed-html-name", Email: "html-name@customer-a.test",
+				Name:   `<img src=x onerror="window.injected=true">`,
+				Claims: map[string]any{"practice": `<script>window.injected=true</script>`},
+			},
 		},
 		devenv.AppBProject: {
 			{UID: "seed-customer-b", Email: "user@customer-b.test", Name: "Customer B User"},

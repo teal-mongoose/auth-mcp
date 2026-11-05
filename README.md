@@ -3,9 +3,9 @@
 The go-between for sign-in. Apps send people here to sign in with Google, Microsoft, Okta or a future
 provider, and get back an ordinary Firebase login. Healthspaces admins manage it through MCP tools.
 
-**Status: phase 5 of 7.** Sign-in works end to end against the mock providers, for staff and several
-customers, and admins can inspect it through read-only MCP tools. There's no admin screen yet (phase
-6). The full plan is in [`../mcp-auth-plan.md`](../mcp-auth-plan.md).
+**Status: phase 6 of 7.** Sign-in works end to end against the mock providers, for staff and several
+customers, and admins can inspect it through read-only MCP tools and a test admin screen. The security
+review (phase 7) is next. The full plan is in [`../mcp-auth-plan.md`](../mcp-auth-plan.md).
 
 Everything runs on this machine, with emulators, mock providers and generic test accounts. It can't
 reach a real Firebase project.
@@ -35,10 +35,11 @@ That starts everything below from the repo root, and Ctrl+C stops it all.
 | Mock Microsoft, other tenant | `127.0.0.1:9405/oidc` |
 | Test App A, project `demo-test-app-a` | `127.0.0.1:8711` |
 | Test App B, project `demo-test-app-b` | `127.0.0.1:8712` |
-| Test Admin, project `demo-auth-mcp` | `127.0.0.1:8713` |
+| Test admin screen, project `demo-auth-mcp` | `127.0.0.1:8713` |
 
 To try a sign-in, open a test app **at `127.0.0.1`**, not `localhost`, because browser storage differs
-between them. Its page loads the Firebase web SDK from `gstatic.com`, so that needs internet access.
+between them. These pages load the Firebase web SDK from `gstatic.com`, and the admin screen loads the
+MCP SDK from `esm.sh`, so they need internet access.
 
 Emulators also use hub ports 4402-4404, logging ports 4502-4504 and websocket port 9152. These are
 chosen so they don't clash with `core`, `video` or `telehealth-demo`.
@@ -90,6 +91,11 @@ Every request needs `Authorization: Bearer <Firebase ID token>`:
 
 Claim values are shown only for `admin`, `org`, `practice`, `clinic`, `roles` and `role`. Any other
 claim appears by name in `hidden_claims`. Each call logs who, which tool, what target and the result.
+
+[`internal/adminscreen`](internal/adminscreen/static/app.js) is a test screen for these tools, covering
+orgs, connections, users and sign-in events, using the official TypeScript MCP client. Sign in as
+`admin@healthspaces.test` to use it. Staff see "Not allowed". It's only part of the dev stack, and
+its browser behaviour has no automated tests: its Go tests only cover how it's served.
 
 ## Check it
 
