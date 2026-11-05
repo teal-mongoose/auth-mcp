@@ -166,6 +166,7 @@ func (f *fakeProvider) connector(t *testing.T, kind Kind) *Connector {
 		RedirectURL:  callbackURL,
 		Domains:      []string{"customer-a.test"},
 		TenantID:     "tenant-a",
+		AllowLocal:   true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -565,7 +566,7 @@ func TestStartupContextCanEndBeforeSignIns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c, err := New(ctx, Config{
 		ID: "conn", Kind: KindOkta, Issuer: f.server.URL, ClientID: testClientID, ClientSecret: testClientSecret,
-		RedirectURL: callbackURL, Domains: []string{"customer-a.test"},
+		RedirectURL: callbackURL, AllowLocal: true, Domains: []string{"customer-a.test"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +596,7 @@ func TestDiscoveryForAnotherIssuerIsRefused(t *testing.T) {
 
 	_, err := New(context.Background(), Config{
 		ID: "conn", Kind: KindOkta, Issuer: impostor.URL, ClientID: testClientID, ClientSecret: testClientSecret,
-		RedirectURL: callbackURL, Domains: []string{"customer-a.test"},
+		RedirectURL: callbackURL, AllowLocal: true, Domains: []string{"customer-a.test"},
 	})
 	if err == nil {
 		t.Fatal("New() accepted discovery naming another issuer")
@@ -603,45 +604,66 @@ func TestDiscoveryForAnotherIssuerIsRefused(t *testing.T) {
 }
 
 func TestConfigIsValidated(t *testing.T) {
-	good := Config{
-		ID: "conn", Kind: KindOkta, Issuer: "https://customer-a.okta.test", ClientID: "id", ClientSecret: "secret",
-		RedirectURL: "https://auth.test/callback", Domains: []string{"customer-a.test"}, TenantID: "tenant-a",
+	okta := Config{
+		ID: "conn", Kind: KindOkta, Issuer: "https://customer-a.okta.com", ClientID: "id", ClientSecret: "secret",
+		RedirectURL: "https://auth.example/callback/conn", Domains: []string{"customer-a.test"},
 	}
+	google := okta
+	google.Kind = KindGoogle
+	google.Issuer = "https://accounts.google.com"
+	microsoft := okta
+	microsoft.Kind = KindMicrosoft
+	microsoft.Domains = nil
+	microsoft.TenantID = "tenant-a"
+	microsoft.Issuer = "https://login.microsoftonline.com/tenant-a/v2.0"
 
 	tests := []struct {
 		name   string
+		base   Config
 		change func(*Config)
 		want   string
 	}{
-		{"no id", func(c *Config) { c.ID = "" }, "ID is required"},
-		{"no client id", func(c *Config) { c.ClientID = "" }, "ClientID is required"},
-		{"no client secret", func(c *Config) { c.ClientSecret = "" }, "ClientSecret is required"},
-		{"unknown kind", func(c *Config) { c.Kind = "myspace" }, "unknown kind"},
-		{"issuer over http", func(c *Config) { c.Issuer = "http://customer-a.okta.test" }, "must use https"},
-		{"issuer lookalike of localhost", func(c *Config) { c.Issuer = "http://localhost.evil.test" }, "must use https"},
-		{"issuer not a URL", func(c *Config) { c.Issuer = "customer-a.okta.test" }, "not an absolute URL"},
-		{"redirect over http", func(c *Config) { c.RedirectURL = "http://auth.test/callback" }, "must use https"},
-		{"okta without domains", func(c *Config) { c.Domains = nil }, "at least one domain"},
-		{"okta with a blank domain", func(c *Config) { c.Domains = []string{" "} }, "at least one domain"},
-		{"google without domains", func(c *Config) { c.Kind = KindGoogle; c.Domains = nil }, "at least one domain"},
-		{"microsoft without a tenant", func(c *Config) { c.Kind = KindMicrosoft; c.TenantID = "" }, "TenantID is required"},
-		{"microsoft common endpoint", func(c *Config) {
-			c.Kind = KindMicrosoft
-			c.Issuer = "https://login.microsoftonline.com/common/v2.0"
-		}, "not a shared endpoint"},
-		{"microsoft organizations endpoint", func(c *Config) {
-			c.Kind = KindMicrosoft
-			c.Issuer = "https://login.microsoftonline.com/Organizations/v2.0"
-		}, "not a shared endpoint"},
-		{"microsoft consumers endpoint", func(c *Config) {
-			c.Kind = KindMicrosoft
-			c.Issuer = "https://login.microsoftonline.com/consumers/v2.0"
-		}, "not a shared endpoint"},
+		{"no id", okta, func(c *Config) { c.ID = "" }, "ID is required"},
+		{"no client id", okta, func(c *Config) { c.ClientID = "" }, "ClientID is required"},
+		{"no client secret", okta, func(c *Config) { c.ClientSecret = "" }, "ClientSecret is required"},
+		{"unknown kind", okta, func(c *Config) { c.Kind = "myspace" }, "unknown kind"},
+		{"issuer not a URL", okta, func(c *Config) { c.Issuer = "customer-a.okta.com" }, "not an absolute URL"},
+		{"issuer over http", okta, func(c *Config) { c.Issuer = "http://customer-a.okta.com" }, "must use https"},
+		{"redirect over http", okta, func(c *Config) { c.RedirectURL = "http://auth.example/callback" }, "must use https"},
+		{"local issuer without permission", okta, func(c *Config) { c.Issuer = "http://127.0.0.1:9402/oidc" }, "must use https"},
+		{"local redirect without permission", okta, func(c *Config) { c.RedirectURL = "http://localhost:8701/callback" }, "must use https"},
+		{"local permission doesn't cover remote http", okta, func(c *Config) {
+			c.AllowLocal = true
+			c.Issuer = "http://localhost.evil.test"
+		}, "must use https"},
+		{"local permission doesn't lift the pin elsewhere", okta, func(c *Config) {
+			c.AllowLocal = true
+			c.Issuer = "https://evil.test"
+		}, "isn't hosted by Okta"},
+
+		{"okta on another host", okta, func(c *Config) { c.Issuer = "https://evil.test" }, "isn't hosted by Okta"},
+		{"okta on a lookalike host", okta, func(c *Config) { c.Issuer = "https://customer-a.okta.com.evil.test" }, "isn't hosted by Okta"},
+		{"okta on a host ending in okta.com", okta, func(c *Config) { c.Issuer = "https://evilokta.com" }, "isn't hosted by Okta"},
+		{"okta without domains", okta, func(c *Config) { c.Domains = nil }, "at least one domain"},
+		{"okta with a blank domain", okta, func(c *Config) { c.Domains = []string{" "} }, "at least one domain"},
+
+		{"google on another issuer", google, func(c *Config) { c.Issuer = "https://evil.test" }, "issuer must be https://accounts.google.com"},
+		{"google without domains", google, func(c *Config) { c.Domains = nil }, "at least one domain"},
+
+		{"microsoft on another issuer", microsoft, func(c *Config) { c.Issuer = "https://evil.test/tenant-a/v2.0" }, "issuer must be"},
+		{"microsoft on another tenant's issuer", microsoft, func(c *Config) {
+			c.Issuer = "https://login.microsoftonline.com/tenant-b/v2.0"
+		}, "issuer must be"},
+		{"microsoft without a tenant", microsoft, func(c *Config) { c.TenantID = "" }, "TenantID is required"},
+		{"microsoft common tenant", microsoft, func(c *Config) { c.TenantID = "common" }, "not a shared one"},
+		{"microsoft organizations tenant", microsoft, func(c *Config) { c.TenantID = "Organizations" }, "not a shared one"},
+		{"microsoft consumers tenant", microsoft, func(c *Config) { c.TenantID = "consumers" }, "not a shared one"},
+		{"microsoft consumers tenant by id", microsoft, func(c *Config) { c.TenantID = "9188040D-6C67-4C5B-B112-36A304B66DAD" }, "not a shared one"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := good
+			cfg := tt.base
 			tt.change(&cfg)
 			_, err := cfg.validated()
 			if err == nil {
@@ -653,15 +675,137 @@ func TestConfigIsValidated(t *testing.T) {
 		})
 	}
 
-	if _, err := good.validated(); err != nil {
-		t.Fatalf("good config: %v", err)
+	for name, cfg := range map[string]Config{"okta": okta, "google": google, "microsoft": microsoft} {
+		if _, err := cfg.validated(); err != nil {
+			t.Errorf("good %s config: %v", name, err)
+		}
 	}
-	localMock := good
+
+	for _, suffix := range []string{"customer-a.okta.com", "customer-a.oktapreview.com", "customer-a.okta-emea.com"} {
+		cfg := okta
+		cfg.Issuer = "https://" + suffix
+		if _, err := cfg.validated(); err != nil {
+			t.Errorf("%s: %v", suffix, err)
+		}
+	}
+
+	localMock := okta
+	localMock.AllowLocal = true
 	localMock.Issuer = "http://127.0.0.1:9402/oidc"
-	localMock.RedirectURL = "http://localhost:8701/callback"
+	localMock.RedirectURL = "http://localhost:8701/callback/conn"
 	if _, err := localMock.validated(); err != nil {
 		t.Fatalf("local mock config: %v", err)
 	}
+}
+
+func TestDiscoveredEndpointsAreChecked(t *testing.T) {
+	remote := Config{}
+	if err := checkEndpoints(remote, "https://a.example/token", "https://b.example/jwks"); err != nil {
+		t.Errorf("https endpoints: %v", err)
+	}
+	if err := checkEndpoints(remote, "https://a.example/token", "http://internal.example/jwks"); err == nil {
+		t.Error("accepted a plain http endpoint")
+	}
+	if err := checkEndpoints(remote, "http://127.0.0.1/token"); err == nil {
+		t.Error("accepted a local endpoint without permission")
+	}
+	if err := checkEndpoints(Config{AllowLocal: true}, "http://127.0.0.1/token"); err != nil {
+		t.Errorf("local endpoint with permission: %v", err)
+	}
+	if err := checkEndpoints(Config{AllowLocal: true}, "http://10.0.0.5/token"); err == nil {
+		t.Error("accepted a remote http endpoint with local permission")
+	}
+
+	// And New really applies this to what discovery says.
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]any{
+			"issuer":                 server.URL,
+			"authorization_endpoint": server.URL + "/authorize",
+			"token_endpoint":         "http://10.0.0.5/token",
+			"jwks_uri":               server.URL + "/jwks",
+		})
+	}))
+	defer server.Close()
+	_, err := New(context.Background(), Config{
+		ID: "conn", Kind: KindOkta, Issuer: server.URL, ClientID: testClientID, ClientSecret: testClientSecret,
+		RedirectURL: callbackURL, AllowLocal: true, Domains: []string{"customer-a.test"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must use https") {
+		t.Errorf("New() = %v, want it to refuse the discovered token endpoint", err)
+	}
+}
+
+func TestProviderResponsesAreLimited(t *testing.T) {
+	t.Run("huge discovery document", func(t *testing.T) {
+		var server *httptest.Server
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// Valid in every way but its size, so that the size is what's refused.
+			writeJSON(w, map[string]any{
+				"issuer":                 server.URL,
+				"authorization_endpoint": server.URL + "/authorize",
+				"token_endpoint":         server.URL + "/token",
+				"jwks_uri":               server.URL + "/jwks",
+				"padding":                strings.Repeat("a", 2*maxProviderResponse),
+			})
+		}))
+		defer server.Close()
+
+		_, err := New(context.Background(), Config{
+			ID: "conn", Kind: KindOkta, Issuer: server.URL, ClientID: testClientID, ClientSecret: testClientSecret,
+			RedirectURL: callbackURL, AllowLocal: true, Domains: []string{"customer-a.test"},
+		})
+		if err == nil {
+			t.Fatal("New() accepted a discovery document over the limit")
+		}
+	})
+
+	t.Run("redirect from discovery", func(t *testing.T) {
+		// The document it redirects to is valid for this issuer, so the redirect is what's refused.
+		var redirecting *httptest.Server
+		redirecting = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/.well-known/openid-configuration" {
+				http.Redirect(w, r, "/elsewhere", http.StatusFound)
+				return
+			}
+			writeJSON(w, map[string]any{
+				"issuer":                 redirecting.URL,
+				"authorization_endpoint": redirecting.URL + "/authorize",
+				"token_endpoint":         redirecting.URL + "/token",
+				"jwks_uri":               redirecting.URL + "/jwks",
+			})
+		}))
+		defer redirecting.Close()
+
+		_, err := New(context.Background(), Config{
+			ID: "conn", Kind: KindOkta, Issuer: redirecting.URL, ClientID: testClientID, ClientSecret: testClientSecret,
+			RedirectURL: callbackURL, AllowLocal: true, Domains: []string{"customer-a.test"},
+		})
+		if err == nil {
+			t.Fatal("New() followed a redirect")
+		}
+	})
+}
+
+func TestIssuerParameterIsChecked(t *testing.T) {
+	f := newFakeProvider(t)
+	c := f.connector(t, KindOkta)
+
+	t.Run("from another provider", func(t *testing.T) {
+		_, pending := c.Begin()
+		f.setIDToken(f.sign(t, signingKey(), f.goodClaims(pending.Nonce)))
+		_, err := c.Complete(context.Background(), pending, Callback{State: pending.State, Code: "code", Issuer: "https://evil.test"})
+		assertRefused(t, err, ReasonIssuerMismatch)
+	})
+
+	t.Run("from this provider", func(t *testing.T) {
+		_, pending := c.Begin()
+		f.setIDToken(f.sign(t, signingKey(), f.goodClaims(pending.Nonce)))
+		_, err := c.Complete(context.Background(), pending, Callback{State: pending.State, Code: "code", Issuer: f.server.URL})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestClientSecretStaysOutOfOutput(t *testing.T) {

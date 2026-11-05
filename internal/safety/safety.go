@@ -2,8 +2,9 @@
 //
 // The Firebase Admin SDK skips ID token signature checks whenever
 // FIREBASE_AUTH_EMULATOR_HOST is set, so anyone able to reach a server in this mode could forge an
-// admin token. Check refuses to let the server start unless it is reachable only from this machine
-// and can only touch emulators.
+// admin token. Check refuses to let the server start unless it's reachable only from this machine,
+// and Firebase can only mean emulators. Any process on this machine could still forge a token, and
+// connections' issuers aren't covered, because they're the connections' own business.
 package safety
 
 import (

@@ -15,6 +15,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,7 +29,11 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const httpTimeout = 10 * time.Second
+const (
+	httpTimeout = 10 * time.Second
+	// maxProviderResponse caps what a provider can make the broker read.
+	maxProviderResponse = 1 << 20
+)
 
 // Kind says which provider's rules apply to a connection.
 type Kind string
@@ -100,6 +105,14 @@ type Config struct {
 	Domains []string
 	// TenantID is the only Microsoft tenant this connection accepts. Required for Microsoft.
 	TenantID string
+	// AllowLocal accepts plain http on this machine, and lifts the issuer pin for issuers there. It's
+	// only for mock providers.
+	AllowLocal bool
+}
+
+// localIssuer says whether this is a mock provider on this machine, where one is allowed.
+func (c Config) localIssuer() bool {
+	return c.AllowLocal && isLocalURL(c.Issuer)
 }
 
 func (c Config) validated() (Config, error) {
@@ -113,10 +126,10 @@ func (c Config) validated() (Config, error) {
 	if c.ClientSecret == "" {
 		errs = append(errs, errors.New("ClientSecret is required"))
 	}
-	if err := checkURL("Issuer", c.Issuer); err != nil {
+	if err := checkURL("Issuer", c.Issuer, c.AllowLocal); err != nil {
 		errs = append(errs, err)
 	}
-	if err := checkURL("RedirectURL", c.RedirectURL); err != nil {
+	if err := checkURL("RedirectURL", c.RedirectURL, c.AllowLocal); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -138,22 +151,54 @@ func (c Config) validated() (Config, error) {
 	return c, nil
 }
 
-// checkURL requires https, allowing plain http only on this machine, for the mock providers.
-func checkURL(name, value string) error {
+// checkURL requires https. Plain http on this machine is allowed only for mock providers.
+func checkURL(name, value string, allowLocal bool) error {
 	u, err := url.Parse(value)
 	if err != nil || u.Host == "" {
 		return fmt.Errorf("%s %q is not an absolute URL", name, value)
 	}
-	switch u.Scheme {
-	case "https":
+	if u.Scheme == "https" || (allowLocal && isLocalURL(value)) {
 		return nil
-	case "http":
-		host := u.Hostname()
-		if ip := net.ParseIP(host); host == "localhost" || (ip != nil && ip.IsLoopback()) {
-			return nil
-		}
 	}
 	return fmt.Errorf("%s %q must use https", name, value)
+}
+
+func isLocalURL(value string) bool {
+	u, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
+}
+
+// checkEndpoints applies the same rule to what a provider's discovery document says. Without it, a
+// provider could have the broker post its client secret and codes over plain http.
+func checkEndpoints(cfg Config, endpoints ...string) error {
+	for _, endpoint := range endpoints {
+		if err := checkURL("discovered endpoint", endpoint, cfg.AllowLocal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// limitedTransport stops a provider from exhausting the broker's memory with a huge response.
+type limitedTransport struct{}
+
+func (limitedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	res, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	res.Body = limitedBody{Reader: io.LimitReader(res.Body, maxProviderResponse), Closer: res.Body}
+	return res, nil
+}
+
+type limitedBody struct {
+	io.Reader
+	io.Closer
 }
 
 func requireDomains(c Config) error {
@@ -169,6 +214,7 @@ type Reason string
 // Refusal reasons.
 const (
 	ReasonStateMismatch    Reason = "state_mismatch"
+	ReasonIssuerMismatch   Reason = "issuer_mismatch"
 	ReasonProviderError    Reason = "provider_error"
 	ReasonMissingCode      Reason = "missing_code"
 	ReasonExchangeFailed   Reason = "exchange_failed"
@@ -230,6 +276,8 @@ type Callback struct {
 	State string
 	Code  string
 	Error string
+	// Issuer is the iss parameter (RFC 9207), which some providers send to prevent mix-ups.
+	Issuer string
 }
 
 // Connector runs sign-ins for one connection.
@@ -248,10 +296,24 @@ func New(ctx context.Context, cfg Config) (*Connector, error) {
 		return nil, err
 	}
 
-	httpClient := &http.Client{Timeout: httpTimeout}
+	httpClient := &http.Client{
+		Timeout:   httpTimeout,
+		Transport: limitedTransport{},
+		// A provider's endpoints don't redirect, and following one could lead anywhere.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, httpClient), cfg.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("connection %q: discovery: %w", cfg.ID, err)
+	}
+	var discovered struct {
+		JWKSURI string `json:"jwks_uri"`
+	}
+	if err := provider.Claims(&discovered); err != nil {
+		return nil, fmt.Errorf("connection %q: discovery: %w", cfg.ID, err)
+	}
+	if err := checkEndpoints(cfg, provider.Endpoint().AuthURL, provider.Endpoint().TokenURL, discovered.JWKSURI); err != nil {
+		return nil, fmt.Errorf("connection %q: %w", cfg.ID, err)
 	}
 
 	return &Connector{
@@ -291,6 +353,9 @@ func (c *Connector) Complete(ctx context.Context, pending Pending, callback Call
 	// State goes first: until it matches, nothing in this request can be trusted.
 	if !secretsMatch(pending.State, callback.State) {
 		return Identity{}, refuse(ReasonStateMismatch, "")
+	}
+	if callback.Issuer != "" && callback.Issuer != c.config.Issuer {
+		return Identity{}, refuse(ReasonIssuerMismatch, "")
 	}
 	if callback.Error != "" {
 		detail := "unrecognized error"

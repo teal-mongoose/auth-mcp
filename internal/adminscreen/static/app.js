@@ -107,7 +107,7 @@ async function finishSignIn() {
 /** The last HTTP status the server refused a request with, because the SDK's errors vary. */
 let refusedStatus = 0
 
-/** Sends each request with a fresh ID token. */
+/** Sends each request with the current ID token, which the Firebase SDK renews near its expiry. */
 async function authorizedFetch(url, init = {}) {
 	const headers = new Headers(init.headers)
 	headers.set('Authorization', 'Bearer ' + await auth.currentUser.getIdToken())
@@ -295,7 +295,7 @@ async function userView(appId, lookup) {
 		['Hidden claims', user.hidden_claims.join(', ')],
 	]
 	return [
-		el('h2', {}, user.display_name || user.uid),
+		el('h2', {}, user.uid),
 		el('dl', {}, ...facts.flatMap(([name, value]) => [el('dt', {}, name), el('dd', {}, value)])),
 		el('h2', {}, 'Claims'),
 		showJSON(user.claims),
@@ -307,6 +307,8 @@ async function userView(appId, lookup) {
 	]
 }
 
+const OUTCOMES = { signed_in: 'Signed in', token_issued: 'Token issued', refused: 'Refused' }
+
 async function eventsView() {
 	const { events } = await callTool('list_sign_in_events', { limit: 25 })
 	return [
@@ -314,9 +316,9 @@ async function eventsView() {
 		el('div', { class: 'toolbar' }, button('Refresh', () => show(eventsView))),
 		events.length === 0
 			? el('p', {}, 'Nothing yet.')
-			: table(['Time', 'Outcome', 'Reason', 'App', 'Org', 'Connection', 'Email', 'UID'], events.map((event) => [
-				event.time, event.outcome === 'signed_in' ? 'Signed in' : 'Refused', event.reason ?? '', event.app_id ?? '',
-				event.org_id ?? '', event.connection_id ?? '', event.email ?? '', event.uid ?? '',
+			: table(['Time', 'Outcome', 'Reason', 'App', 'Org', 'Connection', 'Subject', 'UID', 'Email (as claimed)'], events.map((event) => [
+				event.time, OUTCOMES[event.outcome] ?? event.outcome, event.reason ?? '', event.app_id ?? '',
+				event.org_id ?? '', event.connection_id ?? '', event.subject ?? '', event.uid ?? '', event.email ?? '',
 			])),
 	]
 }

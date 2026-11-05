@@ -60,6 +60,11 @@ func Accounts() map[string][]Account {
 			},
 			{UID: "seed-disabled", Email: "disabled@customer-a.test", Name: "Disabled User", Disabled: true},
 			{
+				// Microsoft users aren't matched to existing accounts, so without a link this one is refused.
+				UID: "seed-ms-existing", Email: "existing@customer-c.test", Name: "Has A Firebase Account",
+				ProviderID: "microsoft.com", ProviderUID: "oid-existing",
+			},
+			{
 				// Tools must show this claim's name but not its value.
 				UID: "seed-odd-claims", Email: "odd-claims@customer-a.test", Name: "Odd Claims User",
 				Claims: map[string]any{"admin": false, "password": "generic-hidden-value"},
@@ -173,8 +178,8 @@ func SetConnectionSecrets() error {
 	return nil
 }
 
-// Links lists who the broker already knows. Google and Microsoft users aren't here, because they're
-// found through their existing Firebase accounts. new@customer-a.test isn't here, so is refused.
+// Links lists who the broker already knows. Google users aren't here, because they're found through
+// their existing Firebase accounts. new@customer-a.test isn't here, so is refused.
 func Links() []broker.Link {
 	link := func(connectionID, subject, projectID, uid string) broker.Link {
 		return broker.Link{ConnectionID: connectionID, Subject: connectionID + "|" + subject, ProjectID: projectID, UID: uid}
@@ -185,5 +190,6 @@ func Links() []broker.Link {
 		link(ConnectionOktaA, "okta-a-admin-claim", devenv.AppAProject, "seed-admin-claim"),
 		link(ConnectionOktaA, "okta-a-disabled", devenv.AppAProject, "seed-disabled"),
 		link(ConnectionOktaB, "okta-b-user", devenv.AppBProject, "seed-customer-b"),
+		{ConnectionID: ConnectionMicrosoftC, Subject: "tenant-customer-c|oid-customer-c", ProjectID: devenv.AppAProject, UID: "seed-customer-c"},
 	}
 }

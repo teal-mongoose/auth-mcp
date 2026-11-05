@@ -1,14 +1,22 @@
 package connector
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 )
 
+const googleIssuer = "https://accounts.google.com"
+
 // google accepts only Workspace accounts in the connection's domains. The hd claim is Google's
 // statement of which Workspace the account belongs to, and personal accounts don't have one.
 var google = adapter{
-	validate: requireDomains,
+	validate: func(cfg Config) error {
+		if !cfg.localIssuer() && cfg.Issuer != googleIssuer {
+			return fmt.Errorf("issuer must be %s", googleIssuer)
+		}
+		return requireDomains(cfg)
+	},
 	subject: func(cfg Config, c claims) (string, error) {
 		if !c.EmailVerified {
 			return "", refuse(ReasonEmailNotVerified, "")

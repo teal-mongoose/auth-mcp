@@ -69,14 +69,14 @@ func follow(t *testing.T, provider *mockidp.Provider, subject, authURL string) C
 func TestProviderScenarios(t *testing.T) {
 	googleConn := func(p *mockidp.Provider, m mockidp.Config) Config {
 		return Config{
-			ID: "staff-google", Kind: KindGoogle, Issuer: p.Issuer(), RedirectURL: callbackURL,
+			ID: "staff-google", Kind: KindGoogle, Issuer: p.Issuer(), RedirectURL: callbackURL, AllowLocal: true,
 			ClientID: m.ClientID, ClientSecret: Secret(m.ClientSecret), Domains: []string{"healthspaces.test"},
 		}
 	}
 	oktaConn := func(id, domain string) func(*mockidp.Provider, mockidp.Config) Config {
 		return func(p *mockidp.Provider, m mockidp.Config) Config {
 			return Config{
-				ID: id, Kind: KindOkta, Issuer: p.Issuer(), RedirectURL: callbackURL,
+				ID: id, Kind: KindOkta, Issuer: p.Issuer(), RedirectURL: callbackURL, AllowLocal: true,
 				ClientID: m.ClientID, ClientSecret: Secret(m.ClientSecret), Domains: []string{domain},
 			}
 		}
@@ -84,7 +84,7 @@ func TestProviderScenarios(t *testing.T) {
 	// Both Microsoft mocks are read through customer C's connection, which accepts only its tenant.
 	microsoftConn := func(p *mockidp.Provider, m mockidp.Config) Config {
 		return Config{
-			ID: "customer-c-microsoft", Kind: KindMicrosoft, Issuer: p.Issuer(), RedirectURL: callbackURL,
+			ID: "customer-c-microsoft", Kind: KindMicrosoft, Issuer: p.Issuer(), RedirectURL: callbackURL, AllowLocal: true,
 			ClientID: m.ClientID, ClientSecret: Secret(m.ClientSecret), TenantID: "tenant-customer-c",
 		}
 	}
@@ -133,7 +133,7 @@ func TestProviderScenarios(t *testing.T) {
 		{
 			name: "microsoft user in the right tenant", mock: mockidp.MicrosoftC, connection: microsoftConn, subject: "ms-c-user",
 			want: func(string) Identity {
-				return Identity{ConnectionID: "customer-c-microsoft", Subject: "tenant-customer-c|oid-customer-c", Email: "user@customer-c.test", Name: "Customer C User", ExistingProviderID: "microsoft.com", ExistingProviderUID: "oid-customer-c"}
+				return Identity{ConnectionID: "customer-c-microsoft", Subject: "tenant-customer-c|oid-customer-c", Email: "user@customer-c.test", Name: "Customer C User"}
 			},
 		},
 		{
@@ -174,7 +174,7 @@ func TestSameEmailAtTwoConnectionsIsTwoIdentities(t *testing.T) {
 	providerB, mockB := startMock(t, mockidp.OktaB)
 
 	a, err := New(context.Background(), Config{
-		ID: "customer-a-okta", Kind: KindOkta, Issuer: providerA.Issuer(), RedirectURL: callbackURL,
+		ID: "customer-a-okta", Kind: KindOkta, Issuer: providerA.Issuer(), RedirectURL: callbackURL, AllowLocal: true,
 		ClientID: mockA.ClientID, ClientSecret: Secret(mockA.ClientSecret), Domains: []string{"customer-a.test"},
 	})
 	if err != nil {
@@ -182,7 +182,7 @@ func TestSameEmailAtTwoConnectionsIsTwoIdentities(t *testing.T) {
 	}
 	// A misconfigured connection that does allow customer A's domain.
 	b, err := New(context.Background(), Config{
-		ID: "customer-b-okta", Kind: KindOkta, Issuer: providerB.Issuer(), RedirectURL: callbackURL,
+		ID: "customer-b-okta", Kind: KindOkta, Issuer: providerB.Issuer(), RedirectURL: callbackURL, AllowLocal: true,
 		ClientID: mockB.ClientID, ClientSecret: Secret(mockB.ClientSecret), Domains: []string{"customer-a.test"},
 	})
 	if err != nil {
@@ -209,7 +209,7 @@ func TestSameEmailAtTwoConnectionsIsTwoIdentities(t *testing.T) {
 func TestStateFromAnotherSignInIsRefused(t *testing.T) {
 	provider, mock := startMock(t, mockidp.OktaA)
 	c, err := New(context.Background(), Config{
-		ID: "customer-a-okta", Kind: KindOkta, Issuer: provider.Issuer(), RedirectURL: callbackURL,
+		ID: "customer-a-okta", Kind: KindOkta, Issuer: provider.Issuer(), RedirectURL: callbackURL, AllowLocal: true,
 		ClientID: mock.ClientID, ClientSecret: Secret(mock.ClientSecret), Domains: []string{"customer-a.test"},
 	})
 	if err != nil {
@@ -229,14 +229,14 @@ func TestCodeFromAnotherProviderIsRefused(t *testing.T) {
 	providerB, mockB := startMock(t, mockidp.OktaB)
 
 	a, err := New(context.Background(), Config{
-		ID: "customer-a-okta", Kind: KindOkta, Issuer: providerA.Issuer(), RedirectURL: callbackURL,
+		ID: "customer-a-okta", Kind: KindOkta, Issuer: providerA.Issuer(), RedirectURL: callbackURL, AllowLocal: true,
 		ClientID: mockA.ClientID, ClientSecret: Secret(mockA.ClientSecret), Domains: []string{"customer-a.test"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, err := New(context.Background(), Config{
-		ID: "customer-b-okta", Kind: KindOkta, Issuer: providerB.Issuer(), RedirectURL: callbackURL,
+		ID: "customer-b-okta", Kind: KindOkta, Issuer: providerB.Issuer(), RedirectURL: callbackURL, AllowLocal: true,
 		ClientID: mockB.ClientID, ClientSecret: Secret(mockB.ClientSecret), Domains: []string{"customer-b.test"},
 	})
 	if err != nil {

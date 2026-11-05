@@ -99,6 +99,23 @@ type testServer struct {
 	logs *syncBuffer
 }
 
+// builtToken makes a hand-built token for the broker's project. The emulator doesn't check signatures,
+// which is what makes these possible, and the claims can be changed to reach each rule.
+func builtToken(t *testing.T, uid string, change func(map[string]any)) string {
+	t.Helper()
+	now := time.Now()
+	claims := map[string]any{
+		"iss": "https://securetoken.google.com/" + devenv.BrokerProject, "aud": devenv.BrokerProject,
+		"sub": uid, "user_id": uid, "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix(),
+		"admin": true, "org": fixtures.OrgHealthspaces,
+		"firebase": map[string]any{"sign_in_provider": "custom", "identities": map[string]any{}},
+	}
+	if change != nil {
+		change(claims)
+	}
+	return unsignedToken(t, claims)
+}
+
 func newServer(t *testing.T) *testServer {
 	t.Helper()
 	logs := &syncBuffer{}
@@ -211,6 +228,28 @@ func TestPermissions(t *testing.T) {
 		want  int
 	}{
 		{name: "admin", token: adminToken, want: http.StatusOK},
+		{name: "hand-built token, as a check that these reach the rules", token: func(t *testing.T) string {
+			return builtToken(t, "seed-admin", nil)
+		}, want: http.StatusOK},
+		{name: "signed in within the limit", token: func(t *testing.T) string {
+			return builtToken(t, "seed-admin", func(c map[string]any) { c["auth_time"] = time.Now().Add(-11 * time.Hour).Unix() })
+		}, want: http.StatusOK},
+		{name: "signed in too long ago, with a freshly refreshed token", token: func(t *testing.T) string {
+			return builtToken(t, "seed-admin", func(c map[string]any) { c["auth_time"] = time.Now().Add(-13 * time.Hour).Unix() })
+		}, want: http.StatusUnauthorized},
+		{name: "signed in directly, not through the broker", token: func(t *testing.T) string {
+			return builtToken(t, "seed-admin", func(c map[string]any) {
+				c["firebase"] = map[string]any{"sign_in_provider": "google.com", "identities": map[string]any{}}
+			})
+		}, want: http.StatusForbidden},
+		{name: "signed in with a tenant", token: func(t *testing.T) string {
+			return builtToken(t, "seed-admin", func(c map[string]any) {
+				c["firebase"] = map[string]any{"sign_in_provider": "custom", "tenant": "some-tenant", "identities": map[string]any{}}
+			})
+		}, want: http.StatusForbidden},
+		{name: "admin claim in the token but not on the account", token: func(t *testing.T) string {
+			return builtToken(t, "seed-staff", nil)
+		}, want: http.StatusForbidden},
 		{name: "no header", want: http.StatusUnauthorized},
 		{name: "not a bearer token", raw: "Basic abc123", want: http.StatusUnauthorized},
 		{name: "garbage", raw: "Bearer not-a-token", want: http.StatusUnauthorized},
@@ -293,6 +332,34 @@ func TestDisabledAndRevokedAdminsAreRefused(t *testing.T) {
 		}
 		if got := status(t, token); got != http.StatusUnauthorized {
 			t.Errorf("after revoking = %d", got)
+		}
+	})
+
+	t.Run("admin claim removed, while still holding a token", func(t *testing.T) {
+		if err := seed.Run(ctx, devenv.SafetyConfig(), clients, store); err != nil {
+			t.Fatal(err)
+		}
+		token := adminToken(t)
+		if got := status(t, token); got != http.StatusOK {
+			t.Fatalf("before removing = %d", got)
+		}
+		if err := client.SetCustomUserClaims(ctx, "seed-admin", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := status(t, token); got != http.StatusForbidden {
+			t.Errorf("after removing = %d", got)
+		}
+	})
+
+	t.Run("admin stored as the string true", func(t *testing.T) {
+		if err := seed.Run(ctx, devenv.SafetyConfig(), clients, store); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.SetCustomUserClaims(ctx, "seed-admin", map[string]any{"admin": "true"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := status(t, adminToken(t)); got != http.StatusForbidden {
+			t.Errorf("status = %d", got)
 		}
 	})
 
@@ -617,6 +684,13 @@ func TestBadToolRequests(t *testing.T) {
 		{"get_user with neither", "get_user", map[string]any{"app_id": fixtures.AppA}, "exactly one"},
 		{"get_user with both", "get_user", map[string]any{"app_id": fixtures.AppA, "uid": "x", "email": "x@y.test"}, "exactly one"},
 		{"get_user with a bad email", "get_user", map[string]any{"app_id": fixtures.AppA, "email": "not-an-email"}, "isn't an email"},
+		{"get_user with an email ending in @", "get_user", map[string]any{"app_id": fixtures.AppA, "email": "jane@clinic.example@"}, "isn't an email"},
+		{"get_user with an email and a name", "get_user", map[string]any{"app_id": fixtures.AppA, "email": "Jane <jane@customer-a.test>"}, "isn't an email"},
+		{"get_user_links with a huge uid", "get_user_links", map[string]any{"app_id": fixtures.AppA, "uid": strings.Repeat("a", 200)}, "too long"},
+		{"get_org with a path as its id", "get_org", map[string]any{"org_id": "a/b/c"}, "no org"},
+		{"get_org with a collection's path as its id", "get_org", map[string]any{"org_id": "a/b"}, "no org"},
+		{"get_connection with a path as its id", "get_connection", map[string]any{"connection_id": "a/b/c"}, "no connection"},
+		{"get_user with a path as its app", "get_user", map[string]any{"app_id": "a/b/c", "uid": "x"}, "no app"},
 		{"get_user with a huge uid", "get_user", map[string]any{"app_id": fixtures.AppA, "uid": strings.Repeat("a", 200)}, "too long"},
 		{"get_user with an unknown uid", "get_user", map[string]any{"app_id": fixtures.AppA, "uid": "nobody"}, "no user found"},
 		{"get_user with an unknown email", "get_user", map[string]any{"app_id": fixtures.AppA, "email": "nobody@customer-a.test"}, "no user found"},
@@ -730,7 +804,7 @@ func TestListSignInEvents(t *testing.T) {
 	web := httptest.NewServer(handler)
 	defer web.Close()
 	for range 3 {
-		res, err := http.Get(web.URL + "/callback?state=made-up&code=whatever")
+		res, err := http.Get(web.URL + "/callback/" + fixtures.ConnectionOktaA + "?state=made-up&code=whatever")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -853,10 +927,59 @@ func TestEveryCallIsLogged(t *testing.T) {
 	want := []line{
 		{"seed-admin", "get_user", fixtures.AppA + "/seed-customer-a", "ok"},
 		{"seed-admin", "get_user", fixtures.AppA + "/nobody", "refused"},
-		{"seed-admin", "get_user", fixtures.AppA + "/(by email)", "ok"},
+		{"seed-admin", "get_user", fixtures.AppA + "/seed-customer-a (by email)", "ok"},
 	}
 	if !slices.Equal(lines, want) {
 		t.Errorf("log lines = %+v, want %+v", lines, want)
+	}
+}
+
+func TestRefusalsAreLogged(t *testing.T) {
+	server := newServer(t)
+	staff := idToken(t, devenv.BrokerProject, "seed-staff", map[string]any{"org": fixtures.OrgHealthspaces})
+	post(t, server.url, func(req *http.Request) { req.Header.Set("Authorization", "Bearer "+staff) })
+	post(t, server.url, func(req *http.Request) { req.Header.Set("Authorization", "Bearer garbage") })
+
+	logs := server.logs.String()
+	for _, want := range []string{"seed-staff", "not an admin", "invalid token"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("log is missing %q: %s", want, logs)
+		}
+	}
+	if strings.Contains(logs, staff) || strings.Contains(logs, "garbage") {
+		t.Errorf("log contains a token: %s", logs)
+	}
+}
+
+func TestClaimValuesInUnexpectedShapesAreHidden(t *testing.T) {
+	s := session(t, newServer(t))
+	ctx := context.Background()
+	reseedAfter(t)
+
+	err := clients[devenv.AppAProject].SetCustomUserClaims(ctx, "seed-odd-claims", map[string]any{
+		"roles":    map[string]any{"password": "secret-in-an-object"},
+		"role":     strings.Repeat("a", 300),
+		"practice": []any{"fine", map[string]any{"password": "secret-in-a-list"}},
+		"clinic":   "main",
+		"admin":    false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output, _, raw := call(t, s, "get_user", map[string]any{"app_id": fixtures.AppA, "uid": "seed-odd-claims"})
+	for _, secret := range []string{"secret-in-an-object", "secret-in-a-list", strings.Repeat("a", 300)} {
+		if strings.Contains(raw, secret) {
+			t.Errorf("output contains %q", secret)
+		}
+	}
+	user := output["user"].(map[string]any)
+	if claims := user["claims"].(map[string]any); claims["clinic"] != "main" || claims["admin"] != false || len(claims) != 2 {
+		t.Errorf("claims = %v", claims)
+	}
+	hidden := user["hidden_claims"].([]any)
+	if !slices.Equal(hidden, []any{"practice", "role", "roles"}) {
+		t.Errorf("hidden_claims = %v", hidden)
 	}
 }
 

@@ -1,14 +1,37 @@
 package connector
 
 import (
+	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 )
 
-// okta limits each customer's connection to that customer's domains, so one customer's Okta can't
-// claim another customer's people. The issuer check has already tied the token to this Okta.
+// oktaHostSuffixes are where Okta hosts its customers' orgs. An issuer elsewhere, such as a customer's
+// own domain, could be repointed at a server the customer runs. Allowing custom domains would need
+// its own review.
+var oktaHostSuffixes = []string{".okta.com", ".oktapreview.com", ".okta-emea.com"}
+
+func isOktaHost(issuer string) bool {
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(oktaHostSuffixes, func(suffix string) bool {
+		return strings.HasSuffix(strings.ToLower(u.Hostname()), suffix)
+	})
+}
+
+// okta limits each customer's connection to that customer's domains. The domain check relies on what
+// the customer's own Okta says, so it's a second line of defence. What really keeps customers apart
+// is that identities are keyed by connection, and that a link is needed.
 var okta = adapter{
-	validate: requireDomains,
+	validate: func(cfg Config) error {
+		if !cfg.localIssuer() && !isOktaHost(cfg.Issuer) {
+			return fmt.Errorf("issuer %q isn't hosted by Okta", cfg.Issuer)
+		}
+		return requireDomains(cfg)
+	},
 	subject: func(cfg Config, c claims) (string, error) {
 		if c.Email == "" {
 			return "", refuse(ReasonMissingClaim, "email")

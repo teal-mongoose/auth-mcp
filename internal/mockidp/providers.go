@@ -41,6 +41,7 @@ func Providers() []Config {
 			Name: MicrosoftC, Addr: "127.0.0.1:9404", ClientID: "mock-microsoft-client", ClientSecret: "mock-microsoft-secret",
 			Identities: []Identity{
 				{Subject: "ms-c-user", Email: "user@customer-c.test", Name: "Customer C User", EmailVerified: true, Extra: map[string]any{"tid": "tenant-customer-c", "oid": "oid-customer-c"}},
+				{Subject: "ms-c-existing", Email: "existing@customer-c.test", Name: "Has A Firebase Account", EmailVerified: true, Extra: map[string]any{"tid": "tenant-customer-c", "oid": "oid-existing"}},
 			},
 		},
 		{

@@ -50,6 +50,9 @@ func (s *Server) Serve(ctx context.Context, handler http.Handler) error {
 	httpServer := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	failed := make(chan error, 1)

@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	// baseCSP allows no scripts, no framing and no form posts.
+	// baseCSP allows no scripts and no framing.
 	baseCSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
 	// noFormsCSP is for every page without a form. The sign-in page leaves form-action out, because
 	// browsers apply it to redirects too, and its form redirects to the person's provider.
@@ -68,6 +68,8 @@ const (
 	reasonCodeWrongApp      = "code_for_another_app"
 	reasonCodeWrongRedirect = "code_for_another_redirect"
 	reasonCodeWrongVerifier = "wrong_pkce_verifier"
+	reasonWrongCallback     = "callback_for_another_connection"
+	reasonRedirectRemoved   = "redirect_no_longer_registered"
 	reasonUnknownDomain     = "unknown_domain"
 	reasonAmbiguousDomain   = "ambiguous_domain"
 )
@@ -106,6 +108,8 @@ type Config struct {
 	Secret func(connectionID string) (connector.Secret, error)
 	// Now defaults to time.Now.
 	Now func() time.Time
+	// AllowLocalProviders accepts mock providers on this machine. See connector.Config.AllowLocal.
+	AllowLocalProviders bool
 }
 
 // SecretEnvName is the environment variable holding a connection's client secret.
@@ -153,7 +157,7 @@ func (b *Broker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /authorize", b.authorize)
 	mux.HandleFunc("POST /authorize", b.route)
-	mux.HandleFunc("GET /callback", b.callback)
+	mux.HandleFunc("GET /callback/{connection}", b.callback)
 	mux.HandleFunc("POST /token", b.token)
 	return securityHeaders(mux)
 }
@@ -295,6 +299,10 @@ func (b *Broker) route(w http.ResponseWriter, r *http.Request) {
 
 // startSignIn sends the browser to a connection's provider.
 func (b *Broker) startSignIn(w http.ResponseWriter, r *http.Request, req authRequest, connectionID string) {
+	// Anyone can send anything here, so an invalid id goes no further, not even into the event.
+	if !ValidID(connectionID) {
+		connectionID = ""
+	}
 	conn, _, err := b.connectorFor(r.Context(), connectionID)
 	if err != nil {
 		b.refuseConnection(w, r, err, req.app.ID, connectionID, req.redirectURI, req.state)
@@ -358,11 +366,35 @@ func (b *Broker) callback(w http.ResponseWriter, r *http.Request) {
 
 	base := Event{AppID: pending.AppID, ConnectionID: pending.ConnectionID, Outcome: OutcomeRefused}
 
+	// Each connection has its own callback URL, registered at its own provider. A sign-in started at one
+	// connection coming back through another's URL is an identity provider mix-up: a malicious connection
+	// sent someone on to an honest provider. Going on would post the honest provider's code to the
+	// malicious connection's token endpoint.
+	if pending.ConnectionID != r.PathValue("connection") {
+		base.Reason = reasonWrongCallback
+		b.record(ctx, base)
+		renderProblem(w, http.StatusBadRequest, browserProblemMessage)
+		return
+	}
+
 	cookie, err := r.Cookie(bindingPrefix + hash(state)[:16])
 	if err != nil || !equalSecrets(hash(cookie.Value), pending.BindingHash) {
 		base.Reason = reasonBrowserMismatch
 		b.record(ctx, base)
 		renderProblem(w, http.StatusBadRequest, browserProblemMessage)
+		return
+	}
+
+	app, err := b.config.Store.App(ctx, pending.AppID)
+	if err != nil {
+		b.serverError(w, "reading app", err)
+		return
+	}
+	// The address may have been removed, perhaps because it was compromised, since this sign-in began.
+	if !slices.Contains(app.RedirectURIs, pending.RedirectURI) {
+		base.Reason = reasonRedirectRemoved
+		b.record(ctx, base)
+		renderProblem(w, http.StatusBadRequest, unknownAppProblemMessage)
 		return
 	}
 
@@ -389,9 +421,10 @@ func (b *Broker) callback(w http.ResponseWriter, r *http.Request) {
 		Nonce:    pending.Nonce,
 		Verifier: pending.Verifier,
 	}, connector.Callback{
-		State: query.Get("state"),
-		Code:  query.Get("code"),
-		Error: query.Get("error"),
+		State:  query.Get("state"),
+		Code:   query.Get("code"),
+		Error:  query.Get("error"),
+		Issuer: query.Get("iss"),
 	})
 	if err != nil {
 		var refused *connector.Refused
@@ -405,12 +438,6 @@ func (b *Broker) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	base.Subject = identity.Subject
 	base.Email = identity.Email
-
-	app, err := b.config.Store.App(ctx, pending.AppID)
-	if err != nil {
-		b.serverError(w, "reading app", err)
-		return
-	}
 
 	uid, reason, err := b.resolve(ctx, app, identity)
 	if err != nil {
@@ -572,6 +599,8 @@ func (b *Broker) token(w http.ResponseWriter, r *http.Request) {
 		event.Reason = reasonCodeWrongApp
 	case doc.RedirectURI != redirectURI:
 		event.Reason = reasonCodeWrongRedirect
+	case !slices.Contains(app.RedirectURIs, doc.RedirectURI):
+		event.Reason = reasonRedirectRemoved
 	case !equalSecrets(challengeFor(verifier), doc.Challenge):
 		event.Reason = reasonCodeWrongVerifier
 	}
@@ -603,6 +632,8 @@ func (b *Broker) token(w http.ResponseWriter, r *http.Request) {
 		b.tokenServerError(w, "creating token", err)
 		return
 	}
+	event.Outcome = OutcomeTokenIssued
+	b.record(ctx, event)
 	writeToken(w, http.StatusOK, tokenResponse{CustomToken: customToken})
 }
 
@@ -638,7 +669,8 @@ func originRegistered(app App, origin string) bool {
 var errConnectionUnavailable = errors.New("connection missing or disabled")
 
 // connectorFor returns the connector for an enabled connection, and the connection. It reads the
-// connection and its org every time, so that disabling one or changing a domain takes effect at once.
+// connection and its org every time, so that disabling one or changing a domain applies to the next
+// step of any sign-in. A code that's already been issued still works for its short life.
 func (b *Broker) connectorFor(ctx context.Context, id string) (*connector.Connector, Connection, error) {
 	connection, connectionUpdated, err := b.config.Store.Connection(ctx, id)
 	if errors.Is(err, ErrNotFound) {
@@ -676,9 +708,10 @@ func (b *Broker) connectorFor(ctx context.Context, id string) (*connector.Connec
 		Issuer:       connection.Issuer,
 		ClientID:     connection.ClientID,
 		ClientSecret: secret,
-		RedirectURL:  b.config.BaseURL + "/callback",
+		RedirectURL:  b.config.BaseURL + "/callback/" + id,
 		Domains:      org.Domains,
 		TenantID:     connection.TenantID,
+		AllowLocal:   b.config.AllowLocalProviders,
 	})
 	if err != nil {
 		return nil, Connection{}, err
@@ -703,8 +736,10 @@ func (b *Broker) refuseConnection(w http.ResponseWriter, r *http.Request, err er
 	redirectResult(w, r, redirectURI, url.Values{"error": {result}, "state": {appState}})
 }
 
-// record saves an event. A failure to save is logged, but doesn't change the sign-in's outcome.
+// record saves an event. A failure to save is logged, but doesn't change the sign-in's outcome. It
+// outlasts the request, so that a client hanging up can't keep its attempt off the record.
 func (b *Broker) record(ctx context.Context, event Event) {
+	ctx = context.WithoutCancel(ctx)
 	event.Time = b.config.Now()
 	slog.Info("sign-in", "outcome", event.Outcome, "reason", event.Reason, "app", event.AppID, "connection", event.ConnectionID)
 	if err := b.config.Store.addEvent(ctx, event); err != nil {

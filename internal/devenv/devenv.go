@@ -145,9 +145,14 @@ func FirestoreClient(ctx context.Context) (*firestore.Client, error) {
 }
 
 // NewHandler builds the whole server's handler on the local emulators, with the given public URL: the
-// sign-in flow, and the admin MCP server at /mcp. Run the safety check first. The returned function
-// releases its resources.
+// sign-in flow, and the admin MCP server at /mcp. The returned function releases its resources.
+//
+// This is local wiring only. It turns on emulator mode, in which tokens' signatures aren't checked, so a
+// production server must have its own wiring that doesn't use this package.
 func NewHandler(ctx context.Context, baseURL string) (http.Handler, func(), error) {
+	if err := safety.Check(SafetyConfig()); err != nil {
+		return nil, nil, fmt.Errorf("refusing to build the handler:\n%w", err)
+	}
 	clients, err := AuthClients(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -159,7 +164,7 @@ func NewHandler(ctx context.Context, baseURL string) (http.Handler, func(), erro
 	store := broker.NewStore(fs)
 
 	mux := http.NewServeMux()
-	mux.Handle("/", broker.New(broker.Config{BaseURL: baseURL, Store: store, Auth: clients}).Handler())
+	mux.Handle("/", broker.New(broker.Config{BaseURL: baseURL, Store: store, Auth: clients, AllowLocalProviders: true}).Handler())
 	mux.Handle("/mcp", admin.New(admin.Config{
 		Store:          store,
 		Auth:           clients,

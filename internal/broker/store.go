@@ -3,6 +3,8 @@ package broker
 import (
 	"context"
 	"errors"
+	"regexp"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -25,6 +27,15 @@ const (
 
 // ErrNotFound means the document doesn't exist, or has already been consumed.
 var ErrNotFound = errors.New("not found")
+
+var idPattern = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+
+// ValidID says whether this could be the id of an app, org or connection. IDs arrive from anyone, in
+// URLs, so this keeps them from becoming Firestore paths, or filling logs and events. Having no
+// underscores or capitals also means that no two ids share a secret's environment variable.
+func ValidID(id string) bool {
+	return idPattern.MatchString(id)
+}
 
 // App is a registered application, and the Firebase project its logins belong to.
 type App struct {
@@ -106,8 +117,11 @@ type Event struct {
 
 // Event outcomes.
 const (
+	// OutcomeSignedIn means that the provider and broker accepted someone, and their app got a code.
 	OutcomeSignedIn = "signed_in"
-	OutcomeRefused  = "refused"
+	// OutcomeTokenIssued means that the app exchanged that code for a login.
+	OutcomeTokenIssued = "token_issued"
+	OutcomeRefused     = "refused"
 )
 
 // Store holds the broker's data in Firestore.
@@ -122,7 +136,7 @@ func NewStore(fs *firestore.Client) *Store {
 
 func getDoc[T any](ctx context.Context, s *Store, collection, id string) (T, *firestore.DocumentSnapshot, error) {
 	var out T
-	if id == "" {
+	if !ValidID(id) {
 		return out, nil, ErrNotFound
 	}
 	snap, err := s.fs.Collection(collection).Doc(id).Get(ctx)
@@ -210,8 +224,13 @@ func (s *Store) Orgs(ctx context.Context) ([]Org, error) {
 	return orgs, nil
 }
 
-// PutOrg saves an org.
+// PutOrg saves an org. Domains are stored in lowercase, because that's how they're looked up.
 func (s *Store) PutOrg(ctx context.Context, org Org) error {
+	domains := make([]string, 0, len(org.Domains))
+	for _, domain := range org.Domains {
+		domains = append(domains, strings.ToLower(strings.TrimSpace(domain)))
+	}
+	org.Domains = domains
 	_, err := s.fs.Collection(collectionOrgs).Doc(org.ID).Set(ctx, org)
 	return err
 }

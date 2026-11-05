@@ -3,9 +3,10 @@
 The go-between for sign-in. Apps send people here to sign in with Google, Microsoft, Okta or a future
 provider, and get back an ordinary Firebase login. Healthspaces admins manage it through MCP tools.
 
-**Status: phase 6 of 7.** Sign-in works end to end against the mock providers, for staff and several
-customers, and admins can inspect it through read-only MCP tools and a test admin screen. The security
-review (phase 7) is next. The full plan is in [`../mcp-auth-plan.md`](../mcp-auth-plan.md).
+**Status: all seven phases are done, against mock providers only.** Sign-in works end to end for staff
+and several customers, and admins can inspect it through read-only MCP tools and a test admin screen.
+It's never run against a real provider. See [`SECURITY-REVIEW.md`](SECURITY-REVIEW.md) for what's verified
+and what isn't, and [`../mcp-auth-plan.md`](../mcp-auth-plan.md) for the plan.
 
 Everything runs on this machine, with emulators, mock providers and generic test accounts. It can't
 reach a real Firebase project.
@@ -65,8 +66,19 @@ accounts, apps and connections in [`internal/fixtures/fixtures.go`](internal/fix
 
 [`internal/testapp/testapp.go`](internal/testapp/testapp.go) is a working example.
 
-A person is recognized through a link, or through their existing Google or Microsoft account in the
-app's Firebase project. Anyone else is refused, and email is never used to match them.
+A person is recognized through a link, or through their existing Google account in the app's Firebase
+project. Microsoft users need a link, because Firebase's record has no tenant to compare. Anyone else is
+refused, and email is never used to match them.
+
+**Registering a provider:** each connection has its own callback, `<base URL>/callback/<connection id>`.
+Register exactly that URL at the provider. A sign-in that comes back through another connection's URL is
+refused, which is what stops one connection stealing another's codes. Issuers are pinned: Google's own,
+`https://login.microsoftonline.com/<tenant>/v2.0`, and Okta's own domains, so Okta custom domains aren't
+accepted.
+
+**Writing an app:** don't copy `internal/testapp` wholesale, because [some of it is for testing
+only](SECURITY-REVIEW.md#if-anyone-copies-the-example-pages). Load nothing third-party on your redirect page,
+and remove the code from the URL before doing anything else.
 
 ## Admin tools
 
@@ -85,12 +97,14 @@ The MCP server is at `POST /mcp`, using stateless Streamable HTTP. Its tools are
 Every request needs `Authorization: Bearer <Firebase ID token>`:
 
 - The token must be from the broker's own project, so an admin in an app's project gets nothing here.
-- It must carry `admin: true` and `org: healthspaces`. Anyone else gets a `403`.
-- Missing, invalid, expired or revoked tokens, and disabled accounts, get a `401`.
+- It must carry `org: healthspaces`, from a sign-in through the broker, and the account must have
+  `admin: true` right now. Anyone else gets a `403`.
+- Missing, invalid, expired or revoked tokens, disabled accounts, and sign-ins over 12 hours old get a
+  `401`.
 - Browsers may only call it from an allowed origin, currently the Test Admin page.
 
-Claim values are shown only for `admin`, `org`, `practice`, `clinic`, `roles` and `role`. Any other
-claim appears by name in `hidden_claims`. Each call logs who, which tool, what target and the result.
+Claim values are shown only for `admin`, `org`, `practice`, `clinic`, `roles` and `role`, and only if
+they're a simple value or a list of short strings. Any other claim appears by name in `hidden_claims`. Each call logs who, which tool, what target and the result.
 
 [`internal/adminscreen`](internal/adminscreen/static/app.js) is a test screen for these tools, covering
 orgs, connections, users and sign-in events, using the official TypeScript MCP client. Sign in as
@@ -139,8 +153,9 @@ go test -tags=emulator -count=1 -p 1 ./...
   `devenv.AuthClient` points each Admin SDK client at the right one.
 - **The server refuses to start outside this setup.** With `FIREBASE_AUTH_EMULATOR_HOST` set, the
   Admin SDK skips ID token signature checks, so anyone able to reach the server could forge an admin
-  token. See [`internal/safety/safety.go`](internal/safety/safety.go). A production build must do the
-  reverse, and refuse to start with that variable set.
+  token. See [`internal/safety/safety.go`](internal/safety/safety.go). `cmd/auth-mcp` only runs locally.
+  A production build needs its own wiring without `internal/devenv`, and must do the reverse, refusing
+  to start with that variable set.
 - **Test code stays out of the server.** `TestServerDoesNotLinkTestCode` fails if `cmd/auth-mcp` ever
   depends on the fixtures or mock providers.
 - **Mocks prove the logic, not the providers.** They only behave as they're built here, and the

@@ -123,6 +123,8 @@ func newBroker(t *testing.T) *testBroker {
 		Store:   store,
 		Auth:    clients,
 		Now:     func() time.Time { return time.Now().Add(time.Duration(tb.offset.Load())) },
+
+		AllowLocalProviders: true,
 	}).Handler()
 	return tb
 }
@@ -439,11 +441,12 @@ func TestAccountTable(t *testing.T) {
 		{name: "customer A in another app has that project's uid", appID: fixtures.AppB, email: "user@customer-a.test", subject: "okta-a-user", wantUID: "seed-customer-a-in-b", wantOrg: fixtures.OrgCustomerA},
 		{name: "customer B", appID: fixtures.AppB, email: "user@customer-b.test", subject: "okta-b-user", wantUID: "seed-customer-b", wantOrg: fixtures.OrgCustomerB},
 		{name: "customer B's okta sending a customer A address", appID: fixtures.AppA, email: "user@customer-b.test", subject: "okta-b-spoof", wantReason: "wrong_domain", reasonConnection: fixtures.ConnectionOktaB},
-		{name: "customer C, found by existing account", appID: fixtures.AppA, email: "user@customer-c.test", subject: "ms-c-user", wantUID: "seed-customer-c", wantOrg: fixtures.OrgCustomerC},
+		{name: "customer C, linked", appID: fixtures.AppA, email: "user@customer-c.test", subject: "ms-c-user", wantUID: "seed-customer-c", wantOrg: fixtures.OrgCustomerC},
 		{name: "valid login, not linked", appID: fixtures.AppA, email: "new@customer-a.test", subject: "okta-a-new", wantReason: "not_linked", reasonConnection: fixtures.ConnectionOktaA},
 		{name: "linked in one app, signing in to another", appID: fixtures.AppB, email: "admin-claim@customer-a.test", subject: "okta-a-admin-claim", wantReason: "not_linked", reasonConnection: fixtures.ConnectionOktaA},
 		{name: "google staff with no account in this project", appID: fixtures.AppB, email: "staff@healthspaces.test", subject: "google-staff", wantReason: "not_linked", reasonConnection: fixtures.ConnectionGoogle},
 		{name: "microsoft user with no account in this project", appID: fixtures.AppB, email: "user@customer-c.test", subject: "ms-c-user", wantReason: "not_linked", reasonConnection: fixtures.ConnectionMicrosoftC},
+		{name: "microsoft user with an existing account but no link", appID: fixtures.AppA, email: "existing@customer-c.test", subject: "ms-c-existing", wantReason: "not_linked", reasonConnection: fixtures.ConnectionMicrosoftC},
 		{name: "provider sends admin, roles and org", appID: fixtures.AppA, email: "admin-claim@customer-a.test", subject: "okta-a-admin-claim", wantUID: "seed-admin-claim", wantOrg: fixtures.OrgCustomerA},
 		{name: "firebase account disabled", appID: fixtures.AppA, email: "disabled@customer-a.test", subject: "okta-a-disabled", wantReason: "account_disabled", reasonConnection: fixtures.ConnectionOktaA},
 	}
@@ -994,6 +997,7 @@ func TestCodeProblems(t *testing.T) {
 		r, code := getCode(t)
 		local := newBroker(t)
 		local.advance(30 * time.Second)
+		clearEventsAfter(t)
 		status, body, _ := local.exchange(t, exchangeFor(r, code))
 		customTokenFrom(t, status, body)
 	})
@@ -1085,14 +1089,14 @@ func TestCallbackProblems(t *testing.T) {
 	})
 
 	t.Run("made-up state", func(t *testing.T) {
-		res, _ := newBrowser(t).get(t, tb.url+"/callback?state=made-up&code=whatever")
+		res, _ := newBrowser(t).get(t, tb.url+"/callback/"+fixtures.ConnectionOktaA+"?state=made-up&code=whatever")
 		if res.StatusCode != http.StatusBadRequest {
 			t.Errorf("status = %d", res.StatusCode)
 		}
 	})
 
 	t.Run("no state", func(t *testing.T) {
-		res, _ := newBrowser(t).get(t, tb.url+"/callback?code=whatever")
+		res, _ := newBrowser(t).get(t, tb.url+"/callback/"+fixtures.ConnectionOktaA+"?code=whatever")
 		if res.StatusCode != http.StatusBadRequest {
 			t.Errorf("status = %d", res.StatusCode)
 		}
@@ -1122,7 +1126,7 @@ func TestCallbackProblems(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, _ := b.get(t, tb.url+"/callback?error=access_denied&state="+url.QueryEscape(parsed.Query().Get("state")))
+		res, _ := b.get(t, tb.url+"/callback/"+fixtures.ConnectionOktaA+"?error=access_denied&state="+url.QueryEscape(parsed.Query().Get("state")))
 		result := backAtApp(t, res.Header.Get("Location"), request)
 		if result.Get("error") != "access_denied" {
 			t.Errorf("result = %v", result)
@@ -1550,4 +1554,265 @@ func TestBadTokensStopTheSignIn(t *testing.T) {
 			lastEventIs(t, id, broker.OutcomeRefused, tt.want)
 		})
 	}
+}
+
+// TestIdentityProviderMixUp plays out the classic attack on a broker with several providers. A
+// malicious connection sends its victim on to an honest provider, hoping that the code comes back and
+// gets posted to the malicious connection's token endpoint. The attacker could then redeem it in their
+// own sign-in, and become the victim.
+func TestIdentityProviderMixUp(t *testing.T) {
+	tb := newBroker(t)
+	ctx := context.Background()
+
+	var stolen atomic.Value
+	stolen.Store("")
+	var mallory *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 mallory.URL,
+			"authorization_endpoint": mallory.URL + "/authorize",
+			"token_endpoint":         mallory.URL + "/token",
+			"jwks_uri":               mallory.URL + "/jwks",
+		})
+	})
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err == nil {
+			stolen.Store(r.PostForm.Get("code"))
+		}
+		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+	})
+	mallory = httptest.NewServer(mux)
+	defer mallory.Close()
+
+	const id = "mallory-okta"
+	t.Setenv(broker.SecretEnvName(id), "mallory-secret")
+	err := store.PutConnection(ctx, broker.Connection{
+		ID: id, OrgID: fixtures.OrgCustomerB, Name: "Mallory", Kind: connector.KindOkta,
+		Issuer: mallory.URL, ClientID: "mallory-client", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := firestore.Collection("connections").Doc(id).Delete(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+
+	// The attacker starts a sign-in at the honest provider, and stops before going there.
+	attacker := newBrowser(t)
+	attackerRequest := newRequest(fixtures.AppA, fixtures.ConnectionOktaA)
+	attackerProviderURL, err := url.Parse(tb.toProvider(t, attacker, attackerRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attackerState := attackerProviderURL.Query().Get("state")
+
+	// The victim clicks a link to the malicious connection.
+	victim := newBrowser(t)
+	victimProviderURL, err := url.Parse(tb.toProvider(t, victim, newRequest(fixtures.AppA, id)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mallory sends the victim to the honest provider, using the attacker's parameters and the
+	// victim's state. The victim signs in there, as themselves.
+	forged := *attackerProviderURL
+	query := forged.Query()
+	query.Set("state", victimProviderURL.Query().Get("state"))
+	forged.RawQuery = query.Encode()
+	callback := atProvider(t, victim, forged.String(), "okta-a-user")
+
+	res, _ := victim.get(t, callback)
+	if strings.Contains(res.Header.Get("Location"), "code=") {
+		t.Errorf("the victim got a code from the mixed-up flow: %q", res.Header.Get("Location"))
+	}
+
+	code, _ := stolen.Load().(string)
+	if code == "" {
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("mixed-up callback = %d, want %d", res.StatusCode, http.StatusBadRequest)
+		}
+		lastEventIs(t, id, broker.OutcomeRefused, "callback_for_another_connection")
+		return
+	}
+	t.Errorf("the honest provider's code reached the malicious connection's token endpoint")
+
+	// Mallory hands the code to the attacker, who redeems it in their own sign-in.
+	attackerCallback, err := url.Parse(callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attackerCallback.RawQuery = url.Values{"state": {attackerState}, "code": {code}}.Encode()
+	res, body := attacker.get(t, attackerCallback.String())
+	if res.StatusCode != http.StatusFound {
+		t.Fatalf("attacker's callback = %d: %s", res.StatusCode, body)
+	}
+	result := backAtApp(t, res.Header.Get("Location"), attackerRequest)
+	if result.Get("code") == "" {
+		t.Fatalf("attacker was refused: %v", result)
+	}
+	status, tokenBody, _ := tb.exchange(t, exchangeFor(attackerRequest, result.Get("code")))
+	idToken, _ := firebaseSession(t, projectFor(fixtures.AppA), customTokenFrom(t, status, tokenBody))
+	verified, err := clients[projectFor(fixtures.AppA)].VerifyIDTokenAndCheckRevoked(ctx, idToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Errorf("ACCOUNT TAKEOVER: the attacker now has a session as %q", verified.UID)
+}
+
+func TestBadIDsGoNoFurther(t *testing.T) {
+	tb := newBroker(t)
+	for _, id := range []string{"a/b", "a/b/c", "..", "CAPITALS", "under_score", strings.Repeat("a", 65), "a b"} {
+		t.Run(id[:min(len(id), 10)], func(t *testing.T) {
+			r := newRequest(fixtures.AppA, id)
+			res, _ := newBrowser(t).get(t, tb.authorizeURL(r))
+			result := backAtApp(t, res.Header.Get("Location"), r)
+			if result.Get("error") != "access_denied" {
+				t.Errorf("result = %v", result)
+			}
+			// Not recorded as it was sent.
+			lastEventIs(t, "", broker.OutcomeRefused, "connection_unavailable")
+		})
+	}
+
+	// An even number of parts would be a collection's path, which Firestore can't read as a document.
+	for _, id := range []string{"a/b", "a/b/c"} {
+		t.Run("as an app id: "+id, func(t *testing.T) {
+			r := newRequest(fixtures.AppA, fixtures.ConnectionOktaA)
+			r.appID = id
+			res, _ := newBrowser(t).get(t, tb.authorizeURL(r))
+			if res.StatusCode != http.StatusBadRequest || res.Header.Get("Location") != "" {
+				t.Errorf("status = %d, Location = %q", res.StatusCode, res.Header.Get("Location"))
+			}
+		})
+	}
+
+	t.Run("old shared callback is gone", func(t *testing.T) {
+		res, _ := newBrowser(t).get(t, tb.url+"/callback?state=x&code=y")
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d", res.StatusCode)
+		}
+	})
+}
+
+func TestProviderIsToldTheConnectionsOwnCallback(t *testing.T) {
+	tb := newBroker(t)
+	providerURL, err := url.Parse(tb.toProvider(t, newBrowser(t), newRequest(fixtures.AppA, fixtures.ConnectionOktaA)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := tb.url + "/callback/" + fixtures.ConnectionOktaA
+	if got := providerURL.Query().Get("redirect_uri"); got != want {
+		t.Errorf("redirect_uri = %q, want %q", got, want)
+	}
+}
+
+func TestIssuerParameterFromAnotherProviderIsRefused(t *testing.T) {
+	tb := newBroker(t)
+	b := newBrowser(t)
+	r := newRequest(fixtures.AppA, fixtures.ConnectionOktaA)
+	callback := atProvider(t, b, tb.toProvider(t, b, r), "okta-a-user")
+
+	res, _ := b.get(t, callback+"&iss="+url.QueryEscape("https://evil.test"))
+	result := backAtApp(t, res.Header.Get("Location"), r)
+	if result.Get("code") != "" {
+		t.Errorf("got a code: %v", result)
+	}
+	lastEventIs(t, fixtures.ConnectionOktaA, broker.OutcomeRefused, "issuer_mismatch")
+}
+
+func TestRemovingAReturnAddressStopsSignInsInProgress(t *testing.T) {
+	tb := newBroker(t)
+	ctx := context.Background()
+	const id = "shrinking-app"
+	original := broker.App{ID: id, Name: "Shrinking", ProjectID: devenv.AppAProject, RedirectURIs: []string{"http://127.0.0.1:1/"}}
+	if err := store.PutApp(ctx, original); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := firestore.Collection("apps").Doc(id).Delete(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	removed := original
+	removed.RedirectURIs = []string{"http://127.0.0.1:2/"}
+
+	start := func() request {
+		return request{appID: id, redirectURI: "http://127.0.0.1:1/", state: "state", verifier: oauth2.GenerateVerifier(), connection: fixtures.ConnectionOktaA}
+	}
+
+	t.Run("at the callback", func(t *testing.T) {
+		if err := store.PutApp(ctx, original); err != nil {
+			t.Fatal(err)
+		}
+		b := newBrowser(t)
+		callback := atProvider(t, b, tb.toProvider(t, b, start()), "okta-a-user")
+		if err := store.PutApp(ctx, removed); err != nil {
+			t.Fatal(err)
+		}
+		res, _ := b.get(t, callback)
+		if res.StatusCode != http.StatusBadRequest || res.Header.Get("Location") != "" {
+			t.Errorf("status = %d, Location = %q", res.StatusCode, res.Header.Get("Location"))
+		}
+		lastEventIs(t, fixtures.ConnectionOktaA, broker.OutcomeRefused, "redirect_no_longer_registered")
+	})
+
+	t.Run("at the exchange", func(t *testing.T) {
+		if err := store.PutApp(ctx, original); err != nil {
+			t.Fatal(err)
+		}
+		r := start()
+		b := newBrowser(t)
+		callback := atProvider(t, b, tb.toProvider(t, b, r), "okta-a-user")
+		res, _ := b.get(t, callback)
+		code := backAtApp(t, res.Header.Get("Location"), r).Get("code")
+		if code == "" {
+			t.Fatalf("no code: %q", res.Header.Get("Location"))
+		}
+		if err := store.PutApp(ctx, removed); err != nil {
+			t.Fatal(err)
+		}
+		status, body, _ := tb.exchange(t, exchangeFor(r, code))
+		wantInvalidGrant(t, status, body)
+		lastEventIs(t, "", broker.OutcomeRefused, "redirect_no_longer_registered")
+	})
+}
+
+func TestExchangeIsRecorded(t *testing.T) {
+	tb := newBroker(t)
+	r := newRequest(fixtures.AppA, fixtures.ConnectionOktaA)
+	code := tb.signIn(t, newBrowser(t), r, "okta-a-user").Get("code")
+	lastEventIs(t, fixtures.ConnectionOktaA, broker.OutcomeSignedIn, "")
+
+	status, body, _ := tb.exchange(t, exchangeFor(r, code))
+	customTokenFrom(t, status, body)
+	events, err := store.RecentEvents(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := events[0]
+	if event.Outcome != broker.OutcomeTokenIssued || event.UID != "seed-customer-a" || event.OrgID != fixtures.OrgCustomerA {
+		t.Errorf("event = %+v", event)
+	}
+}
+
+func TestDomainsAreStoredInLowercase(t *testing.T) {
+	tb := newBroker(t)
+	ctx := context.Background()
+	if err := store.PutOrg(ctx, broker.Org{ID: "impostor", Name: "Impostor", Domains: []string{" CUSTOMER-A.test "}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := firestore.Collection("orgs").Doc("impostor").Delete(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	res, _ := tb.postEmail(t, newBrowser(t), newRoutedRequest(fixtures.AppA, "user@customer-a.test"))
+	if location := res.Header.Get("Location"); location != "" {
+		t.Errorf("routed despite another org claiming the domain in capitals: %q", location)
+	}
+	lastEventIs(t, "", broker.OutcomeRefused, "ambiguous_domain")
 }
