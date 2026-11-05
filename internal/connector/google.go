@@ -18,4 +18,5 @@ var google = adapter{
 		}
 		return cfg.Issuer + "|" + c.Subject, nil
 	},
+	existingProvider: func(c claims) (string, string) { return "google.com", c.Subject },
 }

@@ -3,8 +3,8 @@
 The go-between for sign-in. Apps send people here to sign in with Google, Microsoft, Okta or a future
 provider, and get back an ordinary Firebase login. Healthspaces admins manage it through MCP tools.
 
-**Status: phase 2 of 7.** The local foundation and provider adapters exist, but nothing uses the
-adapters yet: there are no sign-in endpoints or MCP tools. The full plan is in
+**Status: phase 3 of 7.** Sign-in works end to end against the mock providers. There's no
+email-domain routing or `org` claim yet (phase 4), and no MCP tools (phase 5). The full plan is in
 [`../mcp-auth-plan.md`](../mcp-auth-plan.md).
 
 Everything runs on this machine, with emulators, mock providers and generic test accounts. It can't
@@ -33,12 +33,35 @@ That starts everything below from the repo root, and Ctrl+C stops it all.
 | Mock Okta, customer B | `127.0.0.1:9403/oidc` |
 | Mock Microsoft, customer C | `127.0.0.1:9404/oidc` |
 | Mock Microsoft, other tenant | `127.0.0.1:9405/oidc` |
+| Test App A, project `demo-test-app-a` | `127.0.0.1:8711` |
+| Test App B, project `demo-test-app-b` | `127.0.0.1:8712` |
+
+To try a sign-in, open a test app **at `127.0.0.1`**, not `localhost`, because browser storage differs
+between them. Its page loads the Firebase web SDK from `gstatic.com`, so that needs internet access.
 
 Emulators also use hub ports 4402-4404, logging ports 4502-4504 and websocket port 9152. These are
 chosen so they don't clash with `core`, `video` or `telehealth-demo`.
 
 Opening a mock provider's authorize URL without a chosen user shows a page for picking who to sign in
-as. The accounts are in [`internal/fixtures/fixtures.go`](internal/fixtures/fixtures.go).
+as. The providers are in [`internal/mockidp/providers.go`](internal/mockidp/providers.go), and the
+accounts, apps and connections in [`internal/fixtures/fixtures.go`](internal/fixtures/fixtures.go).
+
+## How apps sign in
+
+1. The app sends the browser to `GET /authorize`, with `app_id`, its registered `redirect_uri`,
+   `state`, and an S256 `code_challenge`. Adding `connection` skips the provider choice.
+2. The person signs in at the provider, and the broker checks who they are.
+3. The browser returns to the app's `redirect_uri` with `code` and `state`, or `error` and `state`.
+   Apps only see `access_denied`. The reason is recorded in `sign_in_events` for admins.
+4. The app checks `state`, then sends `POST /token` with `app_id`, `code`, `code_verifier` and
+   `redirect_uri`. A code works once, and for one minute.
+5. The app calls `signInWithCustomToken` with the returned `custom_token`. From there, Firebase works
+   as usual.
+
+[`internal/testapp/testapp.go`](internal/testapp/testapp.go) is a working example.
+
+A person is recognized through a link, or through their existing Google or Microsoft account in the
+app's Firebase project. Anyone else is refused, and email is never used to match them.
 
 ## Check it
 
@@ -58,10 +81,11 @@ golangci-lint run --build-tags=emulator ./...
 go test ./...
 ```
 
-With `go run ./cmd/dev` running, this also tests against the emulators:
+With `go run ./cmd/dev` running, this also tests against the emulators, including the whole sign-in
+flow. `-p 1` matters, because packages reseed the same emulators:
 
 ```bash
-go test -tags=emulator -count=1 ./...
+go test -tags=emulator -count=1 -p 1 ./...
 ```
 
 ## Things worth knowing
@@ -69,8 +93,8 @@ go test -tags=emulator -count=1 ./...
 - **Adding a provider.** [`internal/connector`](internal/connector/connector.go) runs the OIDC flow and
   token checks. A provider adds a small adapter, like
   [`okta.go`](internal/connector/okta.go), saying which claims identify someone and what to refuse.
-- **Callers of `connector.Complete` must keep `Pending` private, use it once and expire it.** That's
-  what makes `state` single-use.
+- **Client secrets are never stored in Firestore.** The broker reads each from an
+  `AUTH_MCP_SECRET_<CONNECTION_ID>` environment variable, which the dev stack sets to mock values.
 - **One emulator per project.** A single Auth emulator sends every API-key sign-in, which is how
   browsers sign in, to its default project. So each project has its own emulator, and
   `devenv.AuthClient` points each Admin SDK client at the right one.

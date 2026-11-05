@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,11 +18,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/teal-mongoose/auth-mcp/internal/broker"
 	"github.com/teal-mongoose/auth-mcp/internal/devenv"
 	"github.com/teal-mongoose/auth-mcp/internal/fixtures"
 	"github.com/teal-mongoose/auth-mcp/internal/mockidp"
 	"github.com/teal-mongoose/auth-mcp/internal/seed"
 	"github.com/teal-mongoose/auth-mcp/internal/server"
+	"github.com/teal-mongoose/auth-mcp/internal/testapp"
 )
 
 const emulatorStartTimeout = 2 * time.Minute
@@ -64,16 +67,24 @@ func run() error {
 		return err
 	}
 
+	if err := fixtures.SetConnectionSecrets(); err != nil {
+		return err
+	}
 	clients, err := devenv.AuthClients(ctx)
 	if err != nil {
 		return err
 	}
-	if err := seed.Run(ctx, cfg, clients); err != nil {
+	fs, err := devenv.FirestoreClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = fs.Close() }()
+	if err := seed.Run(ctx, cfg, clients, broker.NewStore(fs)); err != nil {
 		return err
 	}
 
-	providers := make([]*mockidp.Provider, 0, len(fixtures.MockProviders()))
-	for _, config := range fixtures.MockProviders() {
+	providers := make([]*mockidp.Provider, 0, len(mockidp.Providers()))
+	for _, config := range mockidp.Providers() {
 		provider, err := mockidp.Start(config)
 		if err != nil {
 			return err
@@ -82,10 +93,24 @@ func run() error {
 		providers = append(providers, provider)
 	}
 
+	testApps, err := startTestApps()
+	if err != nil {
+		return err
+	}
+	for _, testApp := range testApps {
+		defer func() { _ = testApp.Close() }()
+	}
+
+	b, closeBroker, err := devenv.NewBroker(ctx, devenv.BaseURL)
+	if err != nil {
+		return err
+	}
+	defer closeBroker()
+
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	served := make(chan error, 1)
-	go func() { served <- srv.Serve(serveCtx) }()
+	go func() { served <- srv.Serve(serveCtx, b.Handler()) }()
 
 	printSummary(srv.Addr(), providers)
 
@@ -99,6 +124,37 @@ func run() error {
 		return err
 	}
 	return <-served
+}
+
+func startTestApps() ([]*http.Server, error) {
+	hosts := map[string]string{}
+	for _, project := range devenv.Projects() {
+		hosts[project.ID] = project.AuthEmulatorHost
+	}
+
+	servers := make([]*http.Server, 0, len(fixtures.Apps()))
+	for _, app := range fixtures.Apps() {
+		redirectURI := app.RedirectURIs[0]
+		addr := strings.TrimSuffix(strings.TrimPrefix(redirectURI, "http://"), "/")
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("test app %s: %w", app.ID, err)
+		}
+		testServer := &http.Server{
+			Handler: testapp.Handler(testapp.Config{
+				AppID:           app.ID,
+				Name:            app.Name,
+				ProjectID:       app.ProjectID,
+				AuthEmulatorURL: "http://" + hosts[app.ProjectID],
+				BrokerURL:       devenv.BaseURL,
+				RedirectURI:     redirectURI,
+			}),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() { _ = testServer.Serve(listener) }()
+		servers = append(servers, testServer)
+	}
+	return servers, nil
 }
 
 func startEmulator(emulator devenv.Emulator, exited chan<- error) (*exec.Cmd, error) {
@@ -187,8 +243,11 @@ func printSummary(addr string, providers []*mockidp.Provider) {
 	for _, project := range devenv.Projects() {
 		fmt.Printf("  Auth emulator, %s: http://%s\n", project.ID, project.AuthEmulatorHost)
 	}
-	for i, config := range fixtures.MockProviders() {
+	for i, config := range mockidp.Providers() {
 		fmt.Printf("  Mock provider, %s: %s\n", config.Name, providers[i].Issuer())
+	}
+	for _, app := range fixtures.Apps() {
+		fmt.Printf("  %s: %s\n", app.Name, app.RedirectURIs[0])
 	}
 	fmt.Println("Stop with Ctrl+C.")
 	fmt.Println()

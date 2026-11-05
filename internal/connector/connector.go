@@ -53,6 +53,9 @@ type adapter struct {
 	// subject applies the provider's rules, and returns the stable identifier for this person within
 	// the connection, or a *Refused.
 	subject func(Config, claims) (string, error)
+	// existingProvider, if set, says how Firebase would have recorded someone who signed in with this
+	// provider directly, before the broker existed.
+	existingProvider func(claims) (providerID, providerUID string)
 }
 
 // claims are the ID token claims adapters may read. A provider's other claims are ignored.
@@ -208,6 +211,10 @@ type Identity struct {
 	// Email and Name are for display only. Never use them to identify anyone or decide access.
 	Email string
 	Name  string
+	// ExistingProviderID and ExistingProviderUID find someone who signed in with this provider through
+	// Firebase directly, if the provider supports that. Otherwise they're empty.
+	ExistingProviderID  string
+	ExistingProviderUID string
 }
 
 // Pending is what must be kept server-side between Begin and Complete. The caller must store it
@@ -339,12 +346,16 @@ func (c *Connector) Complete(ctx context.Context, pending Pending, callback Call
 		return Identity{}, err
 	}
 
-	return Identity{
+	identity := Identity{
 		ConnectionID: c.config.ID,
 		Subject:      subject,
 		Email:        strings.ToLower(cl.Email),
 		Name:         cl.Name,
-	}, nil
+	}
+	if c.adapter.existingProvider != nil {
+		identity.ExistingProviderID, identity.ExistingProviderUID = c.adapter.existingProvider(cl)
+	}
+	return identity, nil
 }
 
 // secretsMatch compares in constant time, and never matches an empty value.

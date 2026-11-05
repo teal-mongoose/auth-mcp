@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/teal-mongoose/auth-mcp/internal/fixtures"
 	"github.com/teal-mongoose/auth-mcp/internal/mockidp"
 )
 
@@ -16,7 +15,7 @@ const callbackURL = "http://127.0.0.1:1/callback"
 // startMock runs one of the dev stack's mock providers on a free port.
 func startMock(t *testing.T, name string) (*mockidp.Provider, mockidp.Config) {
 	t.Helper()
-	for _, cfg := range fixtures.MockProviders() {
+	for _, cfg := range mockidp.Providers() {
 		if cfg.Name != name {
 			continue
 		}
@@ -99,46 +98,46 @@ func TestProviderScenarios(t *testing.T) {
 		wantReason Reason
 	}{
 		{
-			name: "google staff in the right domain", mock: fixtures.MockGoogle, connection: googleConn, subject: "google-staff",
+			name: "google staff in the right domain", mock: mockidp.Google, connection: googleConn, subject: "google-staff",
 			want: func(issuer string) Identity {
-				return Identity{ConnectionID: "staff-google", Subject: issuer + "|google-staff", Email: "staff@healthspaces.test", Name: "Generic Staff"}
+				return Identity{ConnectionID: "staff-google", Subject: issuer + "|google-staff", Email: "staff@healthspaces.test", Name: "Generic Staff", ExistingProviderID: "google.com", ExistingProviderUID: "google-staff"}
 			},
 		},
 		{
-			name: "google account in another domain", mock: fixtures.MockGoogle, connection: googleConn, subject: "google-other",
+			name: "google account in another domain", mock: mockidp.Google, connection: googleConn, subject: "google-other",
 			wantReason: ReasonWrongDomain,
 		},
 		{
-			name: "okta user at customer A", mock: fixtures.MockOktaA, connection: oktaConn("customer-a-okta", "customer-a.test"), subject: "okta-a-user",
+			name: "okta user at customer A", mock: mockidp.OktaA, connection: oktaConn("customer-a-okta", "customer-a.test"), subject: "okta-a-user",
 			want: func(string) Identity {
 				return Identity{ConnectionID: "customer-a-okta", Subject: "customer-a-okta|okta-a-user", Email: "user@customer-a.test", Name: "Customer A User"}
 			},
 		},
 		{
-			name: "okta user at customer B", mock: fixtures.MockOktaB, connection: oktaConn("customer-b-okta", "customer-b.test"), subject: "okta-b-user",
+			name: "okta user at customer B", mock: mockidp.OktaB, connection: oktaConn("customer-b-okta", "customer-b.test"), subject: "okta-b-user",
 			want: func(string) Identity {
 				return Identity{ConnectionID: "customer-b-okta", Subject: "customer-b-okta|okta-b-user", Email: "user@customer-b.test", Name: "Customer B User"}
 			},
 		},
 		{
-			name: "customer B's okta claiming a customer A address", mock: fixtures.MockOktaB, connection: oktaConn("customer-b-okta", "customer-b.test"), subject: "okta-b-spoof",
+			name: "customer B's okta claiming a customer A address", mock: mockidp.OktaB, connection: oktaConn("customer-b-okta", "customer-b.test"), subject: "okta-b-spoof",
 			wantReason: ReasonWrongDomain,
 		},
 		{
 			// The provider also sends admin: true and roles. Identity has nowhere to put them.
-			name: "okta sending admin claims gets a plain identity", mock: fixtures.MockOktaA, connection: oktaConn("customer-a-okta", "customer-a.test"), subject: "okta-a-admin-claim",
+			name: "okta sending admin claims gets a plain identity", mock: mockidp.OktaA, connection: oktaConn("customer-a-okta", "customer-a.test"), subject: "okta-a-admin-claim",
 			want: func(string) Identity {
 				return Identity{ConnectionID: "customer-a-okta", Subject: "customer-a-okta|okta-a-admin-claim", Email: "admin-claim@customer-a.test", Name: "Provider Sends Admin"}
 			},
 		},
 		{
-			name: "microsoft user in the right tenant", mock: fixtures.MockMicrosoftC, connection: microsoftConn, subject: "ms-c-user",
+			name: "microsoft user in the right tenant", mock: mockidp.MicrosoftC, connection: microsoftConn, subject: "ms-c-user",
 			want: func(string) Identity {
-				return Identity{ConnectionID: "customer-c-microsoft", Subject: "tenant-customer-c|oid-customer-c", Email: "user@customer-c.test", Name: "Customer C User"}
+				return Identity{ConnectionID: "customer-c-microsoft", Subject: "tenant-customer-c|oid-customer-c", Email: "user@customer-c.test", Name: "Customer C User", ExistingProviderID: "microsoft.com", ExistingProviderUID: "oid-customer-c"}
 			},
 		},
 		{
-			name: "same email from another microsoft tenant", mock: fixtures.MockMicrosoftOther, connection: microsoftConn, subject: "ms-other-user",
+			name: "same email from another microsoft tenant", mock: mockidp.MicrosoftOther, connection: microsoftConn, subject: "ms-other-user",
 			wantReason: ReasonWrongTenant,
 		},
 	}
@@ -171,8 +170,8 @@ func TestProviderScenarios(t *testing.T) {
 }
 
 func TestSameEmailAtTwoConnectionsIsTwoIdentities(t *testing.T) {
-	providerA, mockA := startMock(t, fixtures.MockOktaA)
-	providerB, mockB := startMock(t, fixtures.MockOktaB)
+	providerA, mockA := startMock(t, mockidp.OktaA)
+	providerB, mockB := startMock(t, mockidp.OktaB)
 
 	a, err := New(context.Background(), Config{
 		ID: "customer-a-okta", Kind: KindOkta, Issuer: providerA.Issuer(), RedirectURL: callbackURL,
@@ -208,7 +207,7 @@ func TestSameEmailAtTwoConnectionsIsTwoIdentities(t *testing.T) {
 }
 
 func TestStateFromAnotherSignInIsRefused(t *testing.T) {
-	provider, mock := startMock(t, fixtures.MockOktaA)
+	provider, mock := startMock(t, mockidp.OktaA)
 	c, err := New(context.Background(), Config{
 		ID: "customer-a-okta", Kind: KindOkta, Issuer: provider.Issuer(), RedirectURL: callbackURL,
 		ClientID: mock.ClientID, ClientSecret: Secret(mock.ClientSecret), Domains: []string{"customer-a.test"},
@@ -226,8 +225,8 @@ func TestStateFromAnotherSignInIsRefused(t *testing.T) {
 }
 
 func TestCodeFromAnotherProviderIsRefused(t *testing.T) {
-	providerA, mockA := startMock(t, fixtures.MockOktaA)
-	providerB, mockB := startMock(t, fixtures.MockOktaB)
+	providerA, mockA := startMock(t, mockidp.OktaA)
+	providerB, mockB := startMock(t, mockidp.OktaB)
 
 	a, err := New(context.Background(), Config{
 		ID: "customer-a-okta", Kind: KindOkta, Issuer: providerA.Issuer(), RedirectURL: callbackURL,

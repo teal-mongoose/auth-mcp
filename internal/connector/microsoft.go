@@ -40,4 +40,6 @@ var microsoft = adapter{
 		}
 		return strings.ToLower(c.TenantID + "|" + c.ObjectID), nil
 	},
+	// What Firebase stores as the microsoft.com uid needs confirming against a real account.
+	existingProvider: func(c claims) (string, string) { return "microsoft.com", c.ObjectID },
 }

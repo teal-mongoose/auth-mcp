@@ -1,4 +1,4 @@
-// Package seed loads the generic test accounts into the Auth emulators.
+// Package seed loads the generic test accounts and broker data into the emulators.
 package seed
 
 import (
@@ -8,6 +8,7 @@ import (
 
 	"firebase.google.com/go/v4/auth"
 
+	"github.com/teal-mongoose/auth-mcp/internal/broker"
 	"github.com/teal-mongoose/auth-mcp/internal/fixtures"
 	"github.com/teal-mongoose/auth-mcp/internal/safety"
 )
@@ -15,11 +16,40 @@ import (
 // Run checks that everything it would touch is an emulator, then replaces the seed accounts. The
 // emulator won't import over an existing uid, so they're deleted first, which also makes this safe
 // to run repeatedly.
-func Run(ctx context.Context, cfg safety.Config, clients map[string]*auth.Client) error {
+func Run(ctx context.Context, cfg safety.Config, clients map[string]*auth.Client, store *broker.Store) error {
 	if err := safety.Check(cfg); err != nil {
 		return fmt.Errorf("refusing to seed:\n%w", err)
 	}
 
+	if err := seedAccounts(ctx, clients); err != nil {
+		return err
+	}
+	return seedBroker(ctx, store)
+}
+
+func seedBroker(ctx context.Context, store *broker.Store) error {
+	for _, app := range fixtures.Apps() {
+		if err := store.PutApp(ctx, app); err != nil {
+			return fmt.Errorf("seeding app %s: %w", app.ID, err)
+		}
+	}
+	for _, connection := range fixtures.Connections() {
+		if err := store.PutConnection(ctx, connection); err != nil {
+			return fmt.Errorf("seeding connection %s: %w", connection.ID, err)
+		}
+	}
+	if err := store.ClearLinks(ctx); err != nil {
+		return fmt.Errorf("clearing links: %w", err)
+	}
+	for _, link := range fixtures.Links() {
+		if err := store.PutLink(ctx, link); err != nil {
+			return fmt.Errorf("seeding link for %s: %w", link.UID, err)
+		}
+	}
+	return nil
+}
+
+func seedAccounts(ctx context.Context, clients map[string]*auth.Client) error {
 	for project, accounts := range fixtures.Accounts() {
 		client, ok := clients[project]
 		if !ok {

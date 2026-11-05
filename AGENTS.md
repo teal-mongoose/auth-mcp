@@ -18,5 +18,5 @@ and `../mcp-auth-plan.md` for the plan and its decisions.
 Before calling a change done, with `go run ./cmd/dev` running:
 
 ```sh
-gofmt -l . && go vet -tags=emulator ./... && golangci-lint run --build-tags=emulator ./... && go test -tags=emulator -count=1 ./...
+gofmt -l . && go vet -tags=emulator ./... && golangci-lint run --build-tags=emulator ./... && go test -tags=emulator -count=1 -p 1 ./...
 ```

@@ -8,9 +8,11 @@ import (
 	"os"
 	"sync"
 
+	"cloud.google.com/go/firestore"
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/auth"
 
+	"github.com/teal-mongoose/auth-mcp/internal/broker"
 	"github.com/teal-mongoose/auth-mcp/internal/safety"
 )
 
@@ -28,6 +30,9 @@ const (
 	AppBAuthHost   = "127.0.0.1:9397"
 	FirestoreHost  = "127.0.0.1:8280"
 	BindAddr       = "127.0.0.1:8701"
+	BaseURL        = "http://" + BindAddr
+	TestAppAAddr   = "127.0.0.1:8711"
+	TestAppBAddr   = "127.0.0.1:8712"
 )
 
 const (
@@ -124,4 +129,25 @@ func AuthClients(ctx context.Context) (map[string]*auth.Client, error) {
 		clients[project.ID] = client
 	}
 	return clients, nil
+}
+
+// FirestoreClient returns a client for the broker's project. Run the safety check first: it's what
+// guarantees this reaches the emulator.
+func FirestoreClient(ctx context.Context) (*firestore.Client, error) {
+	return firestore.NewClient(ctx, BrokerProject)
+}
+
+// NewBroker builds a broker on the local emulators, with the given public URL. Run the safety check
+// first. The returned function releases its resources.
+func NewBroker(ctx context.Context, baseURL string) (*broker.Broker, func(), error) {
+	clients, err := AuthClients(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	fs, err := FirestoreClient(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	b := broker.New(broker.Config{BaseURL: baseURL, Store: broker.NewStore(fs), Auth: clients})
+	return b, func() { _ = fs.Close() }, nil
 }

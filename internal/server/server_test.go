@@ -56,7 +56,11 @@ func TestServeAnswersHealthCheckThenShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- srv.Serve(ctx) }()
+	go func() {
+		done <- srv.Serve(ctx, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusTeapot)
+		}))
+	}()
 
 	res, err := http.Get("http://" + srv.Addr() + "/healthz")
 	if err != nil {
@@ -67,6 +71,17 @@ func TestServeAnswersHealthCheckThenShutsDown(t *testing.T) {
 	}
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("GET /healthz = %d, want %d", res.StatusCode, http.StatusNoContent)
+	}
+
+	passed, err := http.Get("http://" + srv.Addr() + "/anything-else")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := passed.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if passed.StatusCode != http.StatusTeapot {
+		t.Fatalf("GET /anything-else = %d, want it passed to the handler", passed.StatusCode)
 	}
 
 	cancel()

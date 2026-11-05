@@ -28,6 +28,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	b, closeBroker, err := devenv.NewBroker(ctx, devenv.BaseURL)
+	if err != nil {
+		return err
+	}
+	defer closeBroker()
+
 	slog.Info("auth-mcp listening", "addr", srv.Addr())
-	return srv.Serve(ctx)
+	return srv.Serve(ctx, b.Handler())
 }

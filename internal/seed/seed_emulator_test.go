@@ -20,8 +20,11 @@ import (
 	"cloud.google.com/go/firestore"
 	"firebase.google.com/go/v4/auth"
 
+	"github.com/teal-mongoose/auth-mcp/internal/broker"
 	"github.com/teal-mongoose/auth-mcp/internal/devenv"
 	"github.com/teal-mongoose/auth-mcp/internal/fixtures"
+	"github.com/teal-mongoose/auth-mcp/internal/mockidp"
+	"github.com/teal-mongoose/auth-mcp/internal/safety"
 )
 
 func setup(t *testing.T) (context.Context, map[string]*auth.Client) {
@@ -34,16 +37,26 @@ func setup(t *testing.T) (context.Context, map[string]*auth.Client) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Run(ctx, devenv.SafetyConfig(), clients); err != nil {
+	if err := runSeed(ctx, t, devenv.SafetyConfig(), clients); err != nil {
 		t.Fatalf("Run() = %v; is `go run ./cmd/dev` running?", err)
 	}
 	return ctx, clients
 }
 
+func runSeed(ctx context.Context, t *testing.T, cfg safety.Config, clients map[string]*auth.Client) error {
+	t.Helper()
+	fs, err := devenv.FirestoreClient(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = fs.Close() }()
+	return Run(ctx, cfg, clients, broker.NewStore(fs))
+}
+
 func TestSeedIsRepeatableAndComplete(t *testing.T) {
 	ctx, clients := setup(t)
 
-	if err := Run(ctx, devenv.SafetyConfig(), clients); err != nil {
+	if err := runSeed(ctx, t, devenv.SafetyConfig(), clients); err != nil {
 		t.Fatalf("second Run() = %v", err)
 	}
 
@@ -66,7 +79,7 @@ func TestSeedRefusesAnUnsafeConfig(t *testing.T) {
 
 	cfg := devenv.SafetyConfig()
 	cfg.BindAddr = "0.0.0.0:8701"
-	err := Run(ctx, cfg, clients)
+	err := runSeed(ctx, t, cfg, clients)
 	if err == nil || !strings.Contains(err.Error(), "refusing to seed") {
 		t.Fatalf("Run() = %v, want a refusal", err)
 	}
@@ -260,8 +273,8 @@ func TestFirestoreEmulatorWorks(t *testing.T) {
 func TestStackIsReachable(t *testing.T) {
 	setup(t)
 
-	urls := []string{"http://" + devenv.BindAddr + "/healthz"}
-	for _, provider := range fixtures.MockProviders() {
+	urls := []string{"http://" + devenv.BindAddr + "/healthz", "http://" + devenv.TestAppAAddr + "/", "http://" + devenv.TestAppBAddr + "/"}
+	for _, provider := range mockidp.Providers() {
 		urls = append(urls, "http://"+provider.Addr+"/oidc/.well-known/openid-configuration")
 	}
 	for _, url := range urls {

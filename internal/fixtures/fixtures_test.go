@@ -17,6 +17,7 @@ func TestServerDoesNotLinkTestCode(t *testing.T) {
 		"github.com/teal-mongoose/auth-mcp/internal/fixtures",
 		"github.com/teal-mongoose/auth-mcp/internal/mockidp",
 		"github.com/teal-mongoose/auth-mcp/internal/seed",
+		"github.com/teal-mongoose/auth-mcp/internal/testapp",
 		"github.com/oauth2-proxy/mockoidc",
 	} {
 		for _, dep := range strings.Fields(string(out)) {

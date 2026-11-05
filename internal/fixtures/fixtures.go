@@ -1,9 +1,13 @@
-// Package fixtures holds the generic test accounts and mock providers. Every value is a test value.
+// Package fixtures holds the generic test accounts and broker data. Every value is a test value.
 // It's used only by the dev stack and tests, and must never be linked into the server: see
 // TestServerDoesNotLinkTestCode.
 package fixtures
 
 import (
+	"os"
+
+	"github.com/teal-mongoose/auth-mcp/internal/broker"
+	"github.com/teal-mongoose/auth-mcp/internal/connector"
 	"github.com/teal-mongoose/auth-mcp/internal/devenv"
 	"github.com/teal-mongoose/auth-mcp/internal/mockidp"
 )
@@ -64,54 +68,91 @@ func Accounts() map[string][]Account {
 	}
 }
 
-// Mock provider names.
+// Test app ids.
 const (
-	MockGoogle         = "google"
-	MockOktaA          = "okta-customer-a"
-	MockOktaB          = "okta-customer-b"
-	MockMicrosoftC     = "microsoft-customer-c"
-	MockMicrosoftOther = "microsoft-other-tenant"
+	AppA = "test-app-a"
+	AppB = "test-app-b"
 )
 
-// MockProviders lists the mock providers and who can sign in at each, including the people the
-// broker must turn away.
-func MockProviders() []mockidp.Config {
-	return []mockidp.Config{
-		{
-			Name: MockGoogle, Addr: "127.0.0.1:9401", ClientID: "mock-google-client", ClientSecret: "mock-google-secret",
-			Identities: []mockidp.Identity{
-				{Subject: "google-admin", Email: "admin@healthspaces.test", Name: "Generic Admin", EmailVerified: true, Extra: map[string]any{"hd": "healthspaces.test"}},
-				{Subject: "google-staff", Email: "staff@healthspaces.test", Name: "Generic Staff", EmailVerified: true, Extra: map[string]any{"hd": "healthspaces.test"}},
-				{Subject: "google-other", Email: "staff@other.test", Name: "Wrong Domain", EmailVerified: true, Extra: map[string]any{"hd": "other.test"}},
-			},
-		},
-		{
-			Name: MockOktaA, Addr: "127.0.0.1:9402", ClientID: "mock-okta-a-client", ClientSecret: "mock-okta-a-secret",
-			Identities: []mockidp.Identity{
-				{Subject: "okta-a-user", Email: "user@customer-a.test", Name: "Customer A User", EmailVerified: true},
-				{Subject: "okta-a-new", Email: "new@customer-a.test", Name: "Not Linked", EmailVerified: true},
-				{Subject: "okta-a-admin-claim", Email: "admin-claim@customer-a.test", Name: "Provider Sends Admin", EmailVerified: true, Extra: map[string]any{"admin": true, "roles": []any{"admin"}}},
-				{Subject: "okta-a-disabled", Email: "disabled@customer-a.test", Name: "Disabled User", EmailVerified: true},
-			},
-		},
-		{
-			Name: MockOktaB, Addr: "127.0.0.1:9403", ClientID: "mock-okta-b-client", ClientSecret: "mock-okta-b-secret",
-			Identities: []mockidp.Identity{
-				{Subject: "okta-b-user", Email: "user@customer-b.test", Name: "Customer B User", EmailVerified: true},
-				{Subject: "okta-b-spoof", Email: "user@customer-a.test", Name: "Claims To Be Customer A", EmailVerified: true},
-			},
-		},
-		{
-			Name: MockMicrosoftC, Addr: "127.0.0.1:9404", ClientID: "mock-microsoft-client", ClientSecret: "mock-microsoft-secret",
-			Identities: []mockidp.Identity{
-				{Subject: "ms-c-user", Email: "user@customer-c.test", Name: "Customer C User", EmailVerified: true, Extra: map[string]any{"tid": "tenant-customer-c", "oid": "oid-customer-c"}},
-			},
-		},
-		{
-			Name: MockMicrosoftOther, Addr: "127.0.0.1:9405", ClientID: "mock-microsoft-client", ClientSecret: "mock-microsoft-secret",
-			Identities: []mockidp.Identity{
-				{Subject: "ms-other-user", Email: "user@customer-c.test", Name: "Same Email, Other Tenant", EmailVerified: true, Extra: map[string]any{"tid": "tenant-other", "oid": "oid-other"}},
-			},
-		},
+// Apps lists the registered test apps.
+func Apps() []broker.App {
+	return []broker.App{
+		{ID: AppA, Name: "Test App A", ProjectID: devenv.AppAProject, RedirectURIs: []string{"http://" + devenv.TestAppAAddr + "/"}},
+		{ID: AppB, Name: "Test App B", ProjectID: devenv.AppBProject, RedirectURIs: []string{"http://" + devenv.TestAppBAddr + "/"}},
+	}
+}
+
+// Connection ids.
+const (
+	ConnectionGoogle         = "staff-google"
+	ConnectionOktaA          = "customer-a-okta"
+	ConnectionOktaB          = "customer-b-okta"
+	ConnectionMicrosoftC     = "customer-c-microsoft"
+	ConnectionMicrosoftOther = "other-tenant-microsoft"
+)
+
+// connectionMocks says which mock provider each connection uses.
+var connectionMocks = map[string]string{
+	ConnectionGoogle:         mockidp.Google,
+	ConnectionOktaA:          mockidp.OktaA,
+	ConnectionOktaB:          mockidp.OktaB,
+	ConnectionMicrosoftC:     mockidp.MicrosoftC,
+	ConnectionMicrosoftOther: mockidp.MicrosoftOther,
+}
+
+func mockProvider(name string) mockidp.Config {
+	for _, config := range mockidp.Providers() {
+		if config.Name == name {
+			return config
+		}
+	}
+	panic("no mock provider " + name)
+}
+
+// MockIssuer returns the issuer of a mock provider at its usual address.
+func MockIssuer(name string) string {
+	return "http://" + mockProvider(name).Addr + "/oidc"
+}
+
+// Connections lists the connections to the mock providers.
+func Connections() []broker.Connection {
+	connection := func(id, name string, kind connector.Kind, domains []string, tenantID string) broker.Connection {
+		mock := mockProvider(connectionMocks[id])
+		return broker.Connection{
+			ID: id, Name: name, Kind: kind, Issuer: MockIssuer(mock.Name), ClientID: mock.ClientID,
+			Domains: domains, TenantID: tenantID, Enabled: true,
+		}
+	}
+	return []broker.Connection{
+		connection(ConnectionGoogle, "Healthspaces staff (mock Google)", connector.KindGoogle, []string{"healthspaces.test"}, ""),
+		connection(ConnectionOktaA, "Customer A (mock Okta)", connector.KindOkta, []string{"customer-a.test"}, ""),
+		connection(ConnectionOktaB, "Customer B (mock Okta)", connector.KindOkta, []string{"customer-b.test"}, ""),
+		connection(ConnectionMicrosoftC, "Customer C (mock Microsoft)", connector.KindMicrosoft, nil, "tenant-customer-c"),
+		connection(ConnectionMicrosoftOther, "Other tenant (mock Microsoft)", connector.KindMicrosoft, nil, "tenant-other"),
+	}
+}
+
+// SetConnectionSecrets puts the mock client secrets where the broker reads them.
+func SetConnectionSecrets() error {
+	for id, mock := range connectionMocks {
+		if err := os.Setenv(broker.SecretEnvName(id), mockProvider(mock).ClientSecret); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Links lists who the broker already knows. Google and Microsoft users aren't here, because they're
+// found through their existing Firebase accounts. new@customer-a.test isn't here, so is refused.
+func Links() []broker.Link {
+	link := func(connectionID, subject, projectID, uid string) broker.Link {
+		return broker.Link{ConnectionID: connectionID, Subject: connectionID + "|" + subject, ProjectID: projectID, UID: uid}
+	}
+	return []broker.Link{
+		link(ConnectionOktaA, "okta-a-user", devenv.AppAProject, "seed-customer-a"),
+		link(ConnectionOktaA, "okta-a-user", devenv.AppBProject, "seed-customer-a-in-b"),
+		link(ConnectionOktaA, "okta-a-admin-claim", devenv.AppAProject, "seed-admin-claim"),
+		link(ConnectionOktaA, "okta-a-disabled", devenv.AppAProject, "seed-disabled"),
+		link(ConnectionOktaB, "okta-b-user", devenv.AppBProject, "seed-customer-b"),
 	}
 }
