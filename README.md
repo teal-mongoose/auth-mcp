@@ -3,8 +3,9 @@
 The go-between for sign-in. Apps send people here to sign in with Google, Microsoft, Okta or a future
 provider, and get back an ordinary Firebase login. Healthspaces admins manage it through MCP tools.
 
-**Status: phase 1 of 7.** This is the local foundation only: there are no sign-in endpoints or MCP
-tools yet. The full plan is in [`../mcp-auth-plan.md`](../mcp-auth-plan.md).
+**Status: phase 2 of 7.** The local foundation and provider adapters exist, but nothing uses the
+adapters yet: there are no sign-in endpoints or MCP tools. The full plan is in
+[`../mcp-auth-plan.md`](../mcp-auth-plan.md).
 
 Everything runs on this machine, with emulators, mock providers and generic test accounts. It can't
 reach a real Firebase project.
@@ -65,6 +66,11 @@ go test -tags=emulator -count=1 ./...
 
 ## Things worth knowing
 
+- **Adding a provider.** [`internal/connector`](internal/connector/connector.go) runs the OIDC flow and
+  token checks. A provider adds a small adapter, like
+  [`okta.go`](internal/connector/okta.go), saying which claims identify someone and what to refuse.
+- **Callers of `connector.Complete` must keep `Pending` private, use it once and expire it.** That's
+  what makes `state` single-use.
 - **One emulator per project.** A single Auth emulator sends every API-key sign-in, which is how
   browsers sign in, to its default project. So each project has its own emulator, and
   `devenv.AuthClient` points each Admin SDK client at the right one.
