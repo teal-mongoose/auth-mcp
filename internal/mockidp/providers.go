@@ -26,7 +26,7 @@ func Providers() []Config {
 			Identities: []Identity{
 				{Subject: "okta-a-user", Email: "user@customer-a.test", Name: "Customer A User", EmailVerified: true},
 				{Subject: "okta-a-new", Email: "new@customer-a.test", Name: "Not Linked", EmailVerified: true},
-				{Subject: "okta-a-admin-claim", Email: "admin-claim@customer-a.test", Name: "Provider Sends Admin", EmailVerified: true, Extra: map[string]any{"admin": true, "roles": []any{"admin"}}},
+				{Subject: "okta-a-admin-claim", Email: "admin-claim@customer-a.test", Name: "Provider Sends Admin", EmailVerified: true, Extra: map[string]any{"admin": true, "roles": []any{"admin"}, "org": "customer-b"}},
 				{Subject: "okta-a-disabled", Email: "disabled@customer-a.test", Name: "Disabled User", EmailVerified: true},
 			},
 		},

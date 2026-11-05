@@ -7,11 +7,14 @@ package broker_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -25,9 +28,11 @@ import (
 
 	gcpfirestore "cloud.google.com/go/firestore"
 	"firebase.google.com/go/v4/auth"
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/oauth2"
 
 	"github.com/teal-mongoose/auth-mcp/internal/broker"
+	"github.com/teal-mongoose/auth-mcp/internal/connector"
 	"github.com/teal-mongoose/auth-mcp/internal/devenv"
 	"github.com/teal-mongoose/auth-mcp/internal/fixtures"
 	"github.com/teal-mongoose/auth-mcp/internal/mockidp"
@@ -155,13 +160,14 @@ func (b *browser) get(t *testing.T, target string) (*http.Response, string) {
 	return res, string(body)
 }
 
-// request is what an app sends to /authorize.
+// request is what an app sends to /authorize. An email goes through the sign-in page's form.
 type request struct {
 	appID       string
 	redirectURI string
 	state       string
 	verifier    string
 	connection  string
+	email       string
 }
 
 func newRequest(appID, connection string) request {
@@ -172,6 +178,12 @@ func newRequest(appID, connection string) request {
 		verifier:    oauth2.GenerateVerifier(),
 		connection:  connection,
 	}
+}
+
+func newRoutedRequest(appID, email string) request {
+	r := newRequest(appID, "")
+	r.email = email
+	return r
 }
 
 func redirectFor(appID string) string {
@@ -202,10 +214,40 @@ func (tb *testBroker) authorizeURL(r request) string {
 	return tb.url + "/authorize?" + query.Encode()
 }
 
+// postEmail submits the sign-in page's form.
+func (tb *testBroker) postEmail(t *testing.T, b *browser, r request) (*http.Response, string) {
+	t.Helper()
+	res, err := b.client.PostForm(tb.url+"/authorize", url.Values{
+		"app_id":                {r.appID},
+		"redirect_uri":          {r.redirectURI},
+		"state":                 {r.state},
+		"code_challenge":        {challenge(r.verifier)},
+		"code_challenge_method": {"S256"},
+		"email":                 {r.email},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res, string(body)
+}
+
 // toProvider starts a sign-in, and returns the provider URL the browser is sent to.
 func (tb *testBroker) toProvider(t *testing.T, b *browser, r request) string {
 	t.Helper()
-	res, body := b.get(t, tb.authorizeURL(r))
+	var (
+		res  *http.Response
+		body string
+	)
+	if r.email != "" {
+		res, body = tb.postEmail(t, b, r)
+	} else {
+		res, body = b.get(t, tb.authorizeURL(r))
+	}
 	if res.StatusCode != http.StatusFound {
 		t.Fatalf("authorize = %d: %s", res.StatusCode, body)
 	}
@@ -374,29 +416,58 @@ func projectFor(appID string) string {
 	panic("no app " + appID)
 }
 
-func TestSignInThroughEveryProvider(t *testing.T) {
+func TestAccountTable(t *testing.T) {
 	tb := newBroker(t)
 	tests := []struct {
 		name       string
 		appID      string
-		connection string
+		email      string // Routes by email if set.
+		connection string // Otherwise, goes straight to this connection.
 		subject    string
 		wantUID    string
+		wantOrg    string
+		wantAdmin  bool
+		wantReason string
+		// reasonConnection is the connection the refusal should be recorded against.
+		reasonConnection string
 	}{
-		{"google staff, found by existing account", fixtures.AppA, fixtures.ConnectionGoogle, "google-staff", "seed-staff"},
-		{"okta customer A, linked", fixtures.AppA, fixtures.ConnectionOktaA, "okta-a-user", "seed-customer-a"},
-		{"okta customer B, linked", fixtures.AppB, fixtures.ConnectionOktaB, "okta-b-user", "seed-customer-b"},
-		{"microsoft customer C, found by existing account", fixtures.AppA, fixtures.ConnectionMicrosoftC, "ms-c-user", "seed-customer-c"},
-		{"same person in another app has that project's uid", fixtures.AppB, fixtures.ConnectionOktaA, "okta-a-user", "seed-customer-a-in-b"},
+		{name: "admin, found by existing account", appID: fixtures.AppAdmin, email: "admin@healthspaces.test", subject: "google-admin", wantUID: "seed-admin", wantOrg: fixtures.OrgHealthspaces, wantAdmin: true},
+		{name: "staff, found by existing account", appID: fixtures.AppA, email: "staff@healthspaces.test", subject: "google-staff", wantUID: "seed-staff", wantOrg: fixtures.OrgHealthspaces},
+		{name: "staff in the broker project isn't an admin", appID: fixtures.AppAdmin, email: "staff@healthspaces.test", subject: "google-staff", wantUID: "seed-staff", wantOrg: fixtures.OrgHealthspaces},
+		{name: "google account in another domain", appID: fixtures.AppA, connection: fixtures.ConnectionGoogle, subject: "google-other", wantReason: "wrong_domain", reasonConnection: fixtures.ConnectionGoogle},
+		{name: "customer A", appID: fixtures.AppA, email: "user@customer-a.test", subject: "okta-a-user", wantUID: "seed-customer-a", wantOrg: fixtures.OrgCustomerA},
+		{name: "customer A in another app has that project's uid", appID: fixtures.AppB, email: "user@customer-a.test", subject: "okta-a-user", wantUID: "seed-customer-a-in-b", wantOrg: fixtures.OrgCustomerA},
+		{name: "customer B", appID: fixtures.AppB, email: "user@customer-b.test", subject: "okta-b-user", wantUID: "seed-customer-b", wantOrg: fixtures.OrgCustomerB},
+		{name: "customer B's okta sending a customer A address", appID: fixtures.AppA, email: "user@customer-b.test", subject: "okta-b-spoof", wantReason: "wrong_domain", reasonConnection: fixtures.ConnectionOktaB},
+		{name: "customer C, found by existing account", appID: fixtures.AppA, email: "user@customer-c.test", subject: "ms-c-user", wantUID: "seed-customer-c", wantOrg: fixtures.OrgCustomerC},
+		{name: "valid login, not linked", appID: fixtures.AppA, email: "new@customer-a.test", subject: "okta-a-new", wantReason: "not_linked", reasonConnection: fixtures.ConnectionOktaA},
+		{name: "linked in one app, signing in to another", appID: fixtures.AppB, email: "admin-claim@customer-a.test", subject: "okta-a-admin-claim", wantReason: "not_linked", reasonConnection: fixtures.ConnectionOktaA},
+		{name: "google staff with no account in this project", appID: fixtures.AppB, email: "staff@healthspaces.test", subject: "google-staff", wantReason: "not_linked", reasonConnection: fixtures.ConnectionGoogle},
+		{name: "microsoft user with no account in this project", appID: fixtures.AppB, email: "user@customer-c.test", subject: "ms-c-user", wantReason: "not_linked", reasonConnection: fixtures.ConnectionMicrosoftC},
+		{name: "provider sends admin, roles and org", appID: fixtures.AppA, email: "admin-claim@customer-a.test", subject: "okta-a-admin-claim", wantUID: "seed-admin-claim", wantOrg: fixtures.OrgCustomerA},
+		{name: "firebase account disabled", appID: fixtures.AppA, email: "disabled@customer-a.test", subject: "okta-a-disabled", wantReason: "account_disabled", reasonConnection: fixtures.ConnectionOktaA},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := newRequest(tt.appID, tt.connection)
+			r.email = tt.email
 			result := tb.signIn(t, newBrowser(t), r, tt.subject)
+
+			if tt.wantReason != "" {
+				if result.Get("code") != "" {
+					t.Fatalf("got a code: %v", result)
+				}
+				// Apps get a generic answer. The reason is only for admins.
+				if result.Get("error") != "access_denied" {
+					t.Errorf("error = %q, want access_denied", result.Get("error"))
+				}
+				lastEventIs(t, tt.reasonConnection, broker.OutcomeRefused, tt.wantReason)
+				return
+			}
+
 			if result.Get("error") != "" {
 				t.Fatalf("refused: %s", result.Get("error"))
 			}
-
 			status, body, headers := tb.exchange(t, exchangeFor(r, result.Get("code")))
 			customToken := customTokenFrom(t, status, body)
 			if got := headers.Get("Cache-Control"); got != "no-store" {
@@ -406,26 +477,58 @@ func TestSignInThroughEveryProvider(t *testing.T) {
 			project := projectFor(tt.appID)
 			client := clients[project]
 			idToken, refreshToken := firebaseSession(t, project, customToken)
-			verified, err := client.VerifyIDTokenAndCheckRevoked(context.Background(), idToken)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if verified.UID != tt.wantUID {
-				t.Errorf("uid = %q, want %q", verified.UID, tt.wantUID)
-			}
-			if verified.Audience != project {
-				t.Errorf("audience = %q, want %q", verified.Audience, project)
-			}
-
-			refreshed, err := client.VerifyIDTokenAndCheckRevoked(context.Background(), refreshSession(t, project, refreshToken))
-			if err != nil {
-				t.Fatalf("after refresh: %v", err)
-			}
-			if refreshed.UID != tt.wantUID {
-				t.Errorf("uid after refresh = %q, want %q", refreshed.UID, tt.wantUID)
+			refreshed := refreshSession(t, project, refreshToken)
+			for step, token := range map[string]string{"sign-in": idToken, "refresh": refreshed} {
+				verified, err := client.VerifyIDTokenAndCheckRevoked(context.Background(), token)
+				if err != nil {
+					t.Fatalf("%s: %v", step, err)
+				}
+				if verified.UID != tt.wantUID {
+					t.Errorf("%s: uid = %q, want %q", step, verified.UID, tt.wantUID)
+				}
+				if verified.Audience != project {
+					t.Errorf("%s: audience = %q, want %q", step, verified.Audience, project)
+				}
+				if verified.Claims["org"] != tt.wantOrg {
+					t.Errorf("%s: org = %v, want %q", step, verified.Claims["org"], tt.wantOrg)
+				}
+				if got := verified.Claims["admin"] == true; got != tt.wantAdmin {
+					t.Errorf("%s: admin = %v, want %v", step, verified.Claims["admin"], tt.wantAdmin)
+				}
 			}
 		})
 	}
+}
+
+// TestEmailFromAnotherTenantIsRefused sends customer C's connection a token from another tenant, as
+// someone with the same email address in another Microsoft tenant would produce. It uses its own
+// connection, because a second one on customer C would change how customer C's email routes.
+func TestEmailFromAnotherTenantIsRefused(t *testing.T) {
+	tb := newBroker(t)
+	ctx := context.Background()
+	const id = "customer-c-other-tenant-token"
+	mock := fixtures.MockProvider(mockidp.MicrosoftOther)
+	t.Setenv(broker.SecretEnvName(id), mock.ClientSecret)
+
+	err := store.PutConnection(ctx, broker.Connection{
+		ID: id, OrgID: fixtures.OrgCustomerC, Name: "Other tenant", Kind: connector.KindMicrosoft,
+		Issuer: fixtures.MockIssuer(mock.Name), ClientID: mock.ClientID, TenantID: "tenant-customer-c", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := firestore.Collection("connections").Doc(id).Delete(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+
+	r := newRequest(fixtures.AppA, id)
+	result := tb.signIn(t, newBrowser(t), r, "ms-other-user")
+	if result.Get("code") != "" || result.Get("error") != "access_denied" {
+		t.Errorf("result = %v", result)
+	}
+	lastEventIs(t, id, broker.OutcomeRefused, "wrong_tenant")
 }
 
 func TestStoredClaimsSurviveSignInAndRefresh(t *testing.T) {
@@ -450,7 +553,8 @@ func TestStoredClaimsSurviveSignInAndRefresh(t *testing.T) {
 func TestProviderClaimsDoNotReachTheSession(t *testing.T) {
 	tb := newBroker(t)
 	r := newRequest(fixtures.AppA, fixtures.ConnectionOktaA)
-	result := tb.signIn(t, newBrowser(t), r, "okta-a-admin-claim") // This provider sends admin: true.
+	// This provider sends admin: true, roles and org: customer-b.
+	result := tb.signIn(t, newBrowser(t), r, "okta-a-admin-claim")
 	status, body, _ := tb.exchange(t, exchangeFor(r, result.Get("code")))
 
 	project := projectFor(fixtures.AppA)
@@ -466,6 +570,10 @@ func TestProviderClaimsDoNotReachTheSession(t *testing.T) {
 		if value, present := verified.Claims[claim]; present {
 			t.Errorf("provider's %s claim reached the session: %v", claim, value)
 		}
+	}
+	// The connection's org beats both the provider's and the stale one stored on the account.
+	if verified.Claims["org"] != fixtures.OrgCustomerA {
+		t.Errorf("org = %v, want %q", verified.Claims["org"], fixtures.OrgCustomerA)
 	}
 }
 
@@ -503,37 +611,231 @@ func TestExistingUserIsLinkedOnce(t *testing.T) {
 	}
 }
 
-func TestPeopleTheBrokerMustRefuse(t *testing.T) {
+func TestRoutingByEmail(t *testing.T) {
 	tb := newBroker(t)
 	tests := []struct {
-		name       string
-		appID      string
-		connection string
-		subject    string
-		wantReason string
+		name  string
+		email string
+		mock  string
 	}{
-		{"valid login, not linked", fixtures.AppA, fixtures.ConnectionOktaA, "okta-a-new", "not_linked"},
-		{"linked in one app, signing in to another", fixtures.AppB, fixtures.ConnectionOktaA, "okta-a-admin-claim", "not_linked"},
-		{"firebase account disabled", fixtures.AppA, fixtures.ConnectionOktaA, "okta-a-disabled", "account_disabled"},
-		{"google account in another domain", fixtures.AppA, fixtures.ConnectionGoogle, "google-other", "wrong_domain"},
-		{"customer B's okta claiming a customer A address", fixtures.AppA, fixtures.ConnectionOktaB, "okta-b-spoof", "wrong_domain"},
-		{"same email from another microsoft tenant", fixtures.AppA, fixtures.ConnectionMicrosoftOther, "ms-other-user", "not_linked"},
+		{"staff go to Google", "staff@healthspaces.test", mockidp.Google},
+		{"customer A goes to its Okta", "anyone@customer-a.test", mockidp.OktaA},
+		{"customer B goes to its Okta", "anyone@customer-b.test", mockidp.OktaB},
+		{"customer C goes to its Microsoft", "anyone@customer-c.test", mockidp.MicrosoftC},
+		{"case doesn't matter", "Anyone@CUSTOMER-A.test", mockidp.OktaA},
+		{"spaces around it don't matter", "  anyone@customer-a.test ", mockidp.OktaA},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := newRequest(tt.appID, tt.connection)
-			result := tb.signIn(t, newBrowser(t), r, tt.subject)
-
-			if result.Get("code") != "" {
-				t.Fatalf("got a code: %v", result)
+			providerURL := tb.toProvider(t, newBrowser(t), newRoutedRequest(fixtures.AppA, tt.email))
+			if want := fixtures.MockIssuer(tt.mock) + "/"; !strings.HasPrefix(providerURL, want) {
+				t.Errorf("sent to %q, want %q", providerURL, want)
 			}
-			// Apps get a generic answer. The reason is only for admins.
-			if result.Get("error") != "access_denied" {
-				t.Errorf("error = %q, want access_denied", result.Get("error"))
+			if strings.Contains(strings.ToLower(providerURL), "anyone") {
+				t.Errorf("the address is in the URL: %q", providerURL)
 			}
-			lastEventIs(t, tt.connection, broker.OutcomeRefused, tt.wantReason)
 		})
 	}
+}
+
+func TestEmailsThatDoNotRoute(t *testing.T) {
+	tb := newBroker(t)
+	tests := []struct {
+		name  string
+		email string
+		want  string
+	}{
+		{"unknown domain", "someone@unknown.test", "find a sign-in for that address"},
+		{"subdomain of a customer", "someone@sub.customer-a.test", "find a sign-in for that address"},
+		{"customer's domain as a prefix", "someone@customer-a.test.evil.test", "find a sign-in for that address"},
+		{"two at signs", "someone@evil.test@customer-a.test", "find a sign-in for that address"},
+		{"no domain", "someone", "Enter your full work email"},
+		{"no local part", "@customer-a.test", "Enter your full work email"},
+		{"empty", " ", "Enter your full work email"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newRoutedRequest(fixtures.AppA, tt.email)
+			res, body := tb.postEmail(t, newBrowser(t), r)
+			if res.StatusCode != http.StatusOK {
+				t.Errorf("status = %d", res.StatusCode)
+			}
+			if location := res.Header.Get("Location"); location != "" {
+				t.Errorf("redirected to %q", location)
+			}
+			if !strings.Contains(body, tt.want) {
+				t.Errorf("page is missing %q: %s", tt.want, body)
+			}
+		})
+	}
+}
+
+func TestTypedEmailIsNotRecorded(t *testing.T) {
+	tb := newBroker(t)
+	const email = "private-person@unknown.test"
+	tb.postEmail(t, newBrowser(t), newRoutedRequest(fixtures.AppA, email))
+
+	lastEventIs(t, "", broker.OutcomeRefused, "unknown_domain")
+	events, err := store.RecentEvents(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := fmt.Sprintf("%+v", events[0]); strings.Contains(text, "private-person") || strings.Contains(text, "unknown.test") {
+		t.Errorf("the event records what was typed: %s", text)
+	}
+}
+
+func TestPostedRequestsAreCheckedLikeOthers(t *testing.T) {
+	tb := newBroker(t)
+
+	t.Run("unregistered return address never redirects", func(t *testing.T) {
+		r := newRoutedRequest(fixtures.AppA, "user@customer-a.test")
+		r.redirectURI = "https://evil.test/"
+		res, _ := tb.postEmail(t, newBrowser(t), r)
+		if res.StatusCode != http.StatusBadRequest || res.Header.Get("Location") != "" {
+			t.Errorf("status = %d, Location = %q", res.StatusCode, res.Header.Get("Location"))
+		}
+	})
+
+	t.Run("no state goes back to the app", func(t *testing.T) {
+		r := newRoutedRequest(fixtures.AppA, "user@customer-a.test")
+		r.state = ""
+		res, _ := tb.postEmail(t, newBrowser(t), r)
+		if !strings.Contains(res.Header.Get("Location"), "error=invalid_request") {
+			t.Errorf("Location = %q", res.Header.Get("Location"))
+		}
+	})
+
+	t.Run("huge form", func(t *testing.T) {
+		r := newRoutedRequest(fixtures.AppA, strings.Repeat("a", 32<<10)+"@customer-a.test")
+		res, _ := tb.postEmail(t, newBrowser(t), r)
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d", res.StatusCode)
+		}
+	})
+}
+
+func TestSignInPageHidesCustomers(t *testing.T) {
+	tb := newBroker(t)
+	res, body := newBrowser(t).get(t, tb.authorizeURL(newRequest(fixtures.AppA, "")))
+
+	if !strings.Contains(body, "Healthspaces staff") {
+		t.Errorf("staff's connection is missing: %s", body)
+	}
+	if !strings.Contains(body, `name="email"`) {
+		t.Errorf("the email form is missing: %s", body)
+	}
+	for _, customer := range []string{"Customer A", "Customer B", "Customer C", "customer-a", "customer-b", "customer-c", "Okta", "Microsoft"} {
+		if strings.Contains(body, customer) {
+			t.Errorf("the page reveals %q", customer)
+		}
+	}
+	// Browsers apply form-action to redirects, so it would stop the form reaching a provider.
+	if strings.Contains(res.Header.Get("Content-Security-Policy"), "form-action") {
+		t.Errorf("CSP = %q", res.Header.Get("Content-Security-Policy"))
+	}
+}
+
+func TestDomainConfigurationProblems(t *testing.T) {
+	tb := newBroker(t)
+	ctx := context.Background()
+
+	addOrg := func(t *testing.T, org broker.Org) {
+		t.Helper()
+		if err := store.PutOrg(ctx, org); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := firestore.Collection("orgs").Doc(org.ID).Delete(ctx); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	addConnection := func(t *testing.T, connection broker.Connection) {
+		t.Helper()
+		if err := store.PutConnection(ctx, connection); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := firestore.Collection("connections").Doc(connection.ID).Delete(ctx); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+
+	t.Run("two orgs claiming a domain sends nobody anywhere", func(t *testing.T) {
+		addOrg(t, broker.Org{ID: "impostor", Name: "Impostor", Domains: []string{"customer-a.test"}})
+		res, body := tb.postEmail(t, newBrowser(t), newRoutedRequest(fixtures.AppA, "user@customer-a.test"))
+		if location := res.Header.Get("Location"); location != "" {
+			t.Errorf("redirected to %q", location)
+		}
+		if !strings.Contains(body, "find a sign-in for that address") {
+			t.Errorf("page = %s", body)
+		}
+		lastEventIs(t, "", broker.OutcomeRefused, "ambiguous_domain")
+	})
+
+	t.Run("org with no enabled connection", func(t *testing.T) {
+		addOrg(t, broker.Org{ID: "no-connections", Name: "No Connections", Domains: []string{"no-connections.test"}})
+		addConnection(t, broker.Connection{ID: "off", OrgID: "no-connections", Name: "Off", Kind: connector.KindOkta, Issuer: fixtures.MockIssuer(mockidp.OktaA), ClientID: "x"})
+		res, body := tb.postEmail(t, newBrowser(t), newRoutedRequest(fixtures.AppA, "user@no-connections.test"))
+		if res.Header.Get("Location") != "" || !strings.Contains(body, "find a sign-in for that address") {
+			t.Errorf("Location = %q, page = %s", res.Header.Get("Location"), body)
+		}
+		lastEventIs(t, "", broker.OutcomeRefused, "connection_unavailable")
+	})
+
+	t.Run("org with two connections offers only those", func(t *testing.T) {
+		addOrg(t, broker.Org{ID: "two-connections", Name: "Two", Domains: []string{"two-connections.test"}})
+		addConnection(t, broker.Connection{ID: "first", OrgID: "two-connections", Name: "First Way In", Kind: connector.KindOkta, Issuer: fixtures.MockIssuer(mockidp.OktaA), ClientID: "x", Enabled: true})
+		addConnection(t, broker.Connection{ID: "second", OrgID: "two-connections", Name: "Second Way In", Kind: connector.KindOkta, Issuer: fixtures.MockIssuer(mockidp.OktaA), ClientID: "x", Enabled: true})
+		addConnection(t, broker.Connection{ID: "third", OrgID: "two-connections", Name: "Disabled Way In", Kind: connector.KindOkta, Issuer: fixtures.MockIssuer(mockidp.OktaA), ClientID: "x"})
+
+		res, body := tb.postEmail(t, newBrowser(t), newRoutedRequest(fixtures.AppA, "user@two-connections.test"))
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d", res.StatusCode)
+		}
+		for _, want := range []string{"First Way In", "Second Way In"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("page is missing %q", want)
+			}
+		}
+		for _, unwanted := range []string{"Disabled Way In", "Healthspaces staff", `name="email"`} {
+			if strings.Contains(body, unwanted) {
+				t.Errorf("page contains %q", unwanted)
+			}
+		}
+	})
+
+	t.Run("removing a domain takes effect at once", func(t *testing.T) {
+		const id = "shrinking"
+		mock := fixtures.MockProvider(mockidp.OktaA)
+		t.Setenv(broker.SecretEnvName(id), mock.ClientSecret)
+		addOrg(t, broker.Org{ID: id, Name: "Shrinking", Domains: []string{"customer-a.test", "shrinking.test"}})
+		addConnection(t, broker.Connection{ID: id, OrgID: id, Name: "Shrinking", Kind: connector.KindOkta, Issuer: fixtures.MockIssuer(mock.Name), ClientID: mock.ClientID, Enabled: true})
+
+		// Sign in once, so that a connector with the old domains is cached.
+		first := tb.signIn(t, newBrowser(t), newRequest(fixtures.AppA, id), "okta-a-user")
+		lastEventIs(t, id, broker.OutcomeRefused, "not_linked")
+		if first.Get("error") != "access_denied" {
+			t.Fatalf("result = %v", first)
+		}
+
+		if err := store.PutOrg(ctx, broker.Org{ID: id, Name: "Shrinking", Domains: []string{"shrinking.test"}}); err != nil {
+			t.Fatal(err)
+		}
+		tb.signIn(t, newBrowser(t), newRequest(fixtures.AppA, id), "okta-a-user")
+		lastEventIs(t, id, broker.OutcomeRefused, "wrong_domain")
+	})
+
+	t.Run("connection whose org is gone", func(t *testing.T) {
+		addConnection(t, broker.Connection{ID: "orphan", OrgID: "no-such-org", Name: "Orphan", Kind: connector.KindOkta, Issuer: fixtures.MockIssuer(mockidp.OktaA), ClientID: "x", Enabled: true})
+		r := newRequest(fixtures.AppA, "orphan")
+		res, _ := newBrowser(t).get(t, tb.authorizeURL(r))
+		if result := backAtApp(t, res.Header.Get("Location"), r); result.Get("error") != "access_denied" {
+			t.Errorf("result = %v", result)
+		}
+	})
 }
 
 func lastEventIs(t *testing.T, connectionID, outcome, reason string) {
@@ -864,6 +1166,7 @@ func TestDisabledConnections(t *testing.T) {
 	}
 	okta.ID = id
 	okta.Name = "Temporary Okta"
+	okta.ShowOnSignInPage = true
 	t.Setenv(broker.SecretEnvName(id), "mock-okta-a-secret")
 	if err := store.PutConnection(ctx, okta); err != nil {
 		t.Fatal(err)
@@ -900,7 +1203,7 @@ func TestDisabledConnections(t *testing.T) {
 		if strings.Contains(body, "Temporary Okta") {
 			t.Error("a disabled connection is listed")
 		}
-		if !strings.Contains(body, "Customer A") {
+		if !strings.Contains(body, "Healthspaces staff") {
 			t.Errorf("an enabled connection is missing: %s", body)
 		}
 	})
@@ -1079,5 +1382,172 @@ func TestSignedInEventRecordsWhoButNoSecrets(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprintf("%+v", event), code) {
 		t.Error("the event contains the code")
+	}
+}
+
+// attackProvider is a provider that signs in whoever asks, and hands back whatever token a test builds,
+// so that bad tokens can be tried against the whole broker. The connector package tests these in more
+// depth. This checks that they stop the sign-in.
+type attackProvider struct {
+	server *httptest.Server
+	key    *rsa.PrivateKey
+	// token builds the token for the sign-in with this nonce.
+	token atomic.Value
+}
+
+func newAttackProvider(t *testing.T) *attackProvider {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &attackProvider{key: key}
+	var nonce atomic.Value
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                p.server.URL,
+			"authorization_endpoint":                p.server.URL + "/authorize",
+			"token_endpoint":                        p.server.URL + "/token",
+			"jwks_uri":                              p.server.URL + "/jwks",
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	})
+	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{
+			"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "attack-key",
+			"n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+			"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+		}}})
+	})
+	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {
+		nonce.Store(r.URL.Query().Get("nonce"))
+		target, err := url.Parse(r.URL.Query().Get("redirect_uri"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		target.RawQuery = url.Values{"code": {"provider-code"}, "state": {r.URL.Query().Get("state")}}.Encode()
+		http.Redirect(w, r, target.String(), http.StatusFound)
+	})
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, _ *http.Request) {
+		build := p.token.Load().(func(nonce string) string)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "access", "token_type": "Bearer", "id_token": build(nonce.Load().(string)),
+		})
+	})
+	p.server = httptest.NewServer(mux)
+	t.Cleanup(p.server.Close)
+	return p
+}
+
+func (p *attackProvider) sign(t *testing.T, key *rsa.PrivateKey, claims jwt.MapClaims) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = "attack-key"
+	signed, err := token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
+func TestBadTokensStopTheSignIn(t *testing.T) {
+	tb := newBroker(t)
+	ctx := context.Background()
+	provider := newAttackProvider(t)
+	forgeryKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const id = "attack-okta"
+	t.Setenv(broker.SecretEnvName(id), "attack-secret")
+	err = store.PutConnection(ctx, broker.Connection{
+		ID: id, OrgID: fixtures.OrgCustomerA, Name: "Attack", Kind: connector.KindOkta,
+		Issuer: provider.server.URL, ClientID: "attack-client", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := id + "|attacker"
+	err = store.PutLink(ctx, broker.Link{ConnectionID: id, Subject: subject, ProjectID: devenv.AppAProject, UID: "seed-customer-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := firestore.Collection("connections").Doc(id).Delete(ctx); err != nil {
+			t.Error(err)
+		}
+		if err := seed.Run(ctx, devenv.SafetyConfig(), clients, store); err != nil {
+			t.Error(err)
+		}
+	})
+
+	good := func(nonce string) jwt.MapClaims {
+		now := time.Now()
+		return jwt.MapClaims{
+			"iss": provider.server.URL, "aud": "attack-client", "sub": "attacker",
+			"iat": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(), "nonce": nonce,
+			"email": "user@customer-a.test", "email_verified": true,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		change func(jwt.MapClaims)
+		key    *rsa.PrivateKey
+		want   string
+	}{
+		{name: "forged signature", key: forgeryKey, want: "invalid_id_token"},
+		{name: "wrong issuer", change: func(c jwt.MapClaims) { c["iss"] = "https://evil.test" }, want: "invalid_id_token"},
+		{name: "wrong audience", change: func(c jwt.MapClaims) { c["aud"] = "another-client" }, want: "invalid_id_token"},
+		{name: "expired", change: func(c jwt.MapClaims) { c["exp"] = time.Now().Add(-time.Hour).Unix() }, want: "invalid_id_token"},
+		{name: "wrong nonce", change: func(c jwt.MapClaims) { c["nonce"] = "replayed" }, want: "nonce_mismatch"},
+		{name: "another customer's domain", change: func(c jwt.MapClaims) { c["email"] = "user@customer-b.test" }, want: "wrong_domain"},
+	}
+
+	signInWith := func(t *testing.T, build func(nonce string) string) (request, url.Values) {
+		t.Helper()
+		provider.token.Store(build)
+		b := newBrowser(t)
+		r := newRequest(fixtures.AppA, id)
+		providerRes, _ := b.get(t, tb.toProvider(t, b, r))
+		res, body := b.get(t, providerRes.Header.Get("Location"))
+		if res.StatusCode != http.StatusFound {
+			t.Fatalf("callback = %d: %s", res.StatusCode, body)
+		}
+		return r, backAtApp(t, res.Header.Get("Location"), r)
+	}
+
+	// If this fails, the attacks below would be passing for the wrong reason.
+	t.Run("the same token, unchanged, is accepted", func(t *testing.T) {
+		_, result := signInWith(t, func(nonce string) string { return provider.sign(t, provider.key, good(nonce)) })
+		if result.Get("code") == "" {
+			t.Fatalf("refused: %v", result)
+		}
+		lastEventIs(t, id, broker.OutcomeSignedIn, "")
+	})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, result := signInWith(t, func(nonce string) string {
+				claims := good(nonce)
+				if tt.change != nil {
+					tt.change(claims)
+				}
+				key := provider.key
+				if tt.key != nil {
+					key = tt.key
+				}
+				return provider.sign(t, key, claims)
+			})
+			if result.Get("code") != "" || result.Get("error") != "access_denied" {
+				t.Errorf("result = %v", result)
+			}
+			lastEventIs(t, id, broker.OutcomeRefused, tt.want)
+		})
 	}
 }

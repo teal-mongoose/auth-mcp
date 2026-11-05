@@ -16,7 +16,7 @@ var okta = adapter{
 		if !c.EmailVerified {
 			return "", refuse(ReasonEmailNotVerified, "")
 		}
-		domain, ok := emailDomain(c.Email)
+		domain, ok := EmailDomain(c.Email)
 		if !ok || !slices.Contains(cfg.Domains, domain) {
 			return "", refuse(ReasonWrongDomain, "email domain not allowed for this connection")
 		}
@@ -24,9 +24,9 @@ var okta = adapter{
 	},
 }
 
-// emailDomain returns the lowercase part after the first @. With a second @, that part contains an
+// EmailDomain returns the lowercase part after the first @. With a second @, that part contains an
 // @ and can't match an allowed domain.
-func emailDomain(email string) (string, bool) {
+func EmailDomain(email string) (string, bool) {
 	local, domain, found := strings.Cut(email, "@")
 	if !found || local == "" {
 		return "", false

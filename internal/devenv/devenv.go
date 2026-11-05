@@ -33,6 +33,7 @@ const (
 	BaseURL        = "http://" + BindAddr
 	TestAppAAddr   = "127.0.0.1:8711"
 	TestAppBAddr   = "127.0.0.1:8712"
+	TestAdminAddr  = "127.0.0.1:8713"
 )
 
 const (

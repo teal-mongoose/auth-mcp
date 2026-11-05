@@ -3,8 +3,8 @@
 The go-between for sign-in. Apps send people here to sign in with Google, Microsoft, Okta or a future
 provider, and get back an ordinary Firebase login. Healthspaces admins manage it through MCP tools.
 
-**Status: phase 3 of 7.** Sign-in works end to end against the mock providers. There's no
-email-domain routing or `org` claim yet (phase 4), and no MCP tools (phase 5). The full plan is in
+**Status: phase 4 of 7.** Sign-in works end to end against the mock providers, for staff and several
+customers. There are no MCP tools yet (phase 5). The full plan is in
 [`../mcp-auth-plan.md`](../mcp-auth-plan.md).
 
 Everything runs on this machine, with emulators, mock providers and generic test accounts. It can't
@@ -35,6 +35,7 @@ That starts everything below from the repo root, and Ctrl+C stops it all.
 | Mock Microsoft, other tenant | `127.0.0.1:9405/oidc` |
 | Test App A, project `demo-test-app-a` | `127.0.0.1:8711` |
 | Test App B, project `demo-test-app-b` | `127.0.0.1:8712` |
+| Test Admin, project `demo-auth-mcp` | `127.0.0.1:8713` |
 
 To try a sign-in, open a test app **at `127.0.0.1`**, not `localhost`, because browser storage differs
 between them. Its page loads the Firebase web SDK from `gstatic.com`, so that needs internet access.
@@ -49,14 +50,17 @@ accounts, apps and connections in [`internal/fixtures/fixtures.go`](internal/fix
 ## How apps sign in
 
 1. The app sends the browser to `GET /authorize`, with `app_id`, its registered `redirect_uri`,
-   `state`, and an S256 `code_challenge`. Adding `connection` skips the provider choice.
-2. The person signs in at the provider, and the broker checks who they are.
+   `state`, and an S256 `code_challenge`. Adding `connection` goes straight to that connection.
+   Otherwise, the sign-in page asks for their email, and its domain picks the org and connection.
+2. The person signs in at the provider, and the broker checks who they are. The typed email only
+   decides where to send them. It isn't stored, and it isn't what identifies them.
 3. The browser returns to the app's `redirect_uri` with `code` and `state`, or `error` and `state`.
    Apps only see `access_denied`. The reason is recorded in `sign_in_events` for admins.
 4. The app checks `state`, then sends `POST /token` with `app_id`, `code`, `code_verifier` and
    `redirect_uri`. A code works once, and for one minute.
 5. The app calls `signInWithCustomToken` with the returned `custom_token`. From there, Firebase works
-   as usual.
+   as usual, and the session's `org` claim names the person's org. It comes from the connection, and
+   replaces any stored `org` claim.
 
 [`internal/testapp/testapp.go`](internal/testapp/testapp.go) is a working example.
 
@@ -93,6 +97,11 @@ go test -tags=emulator -count=1 -p 1 ./...
 - **Adding a provider.** [`internal/connector`](internal/connector/connector.go) runs the OIDC flow and
   token checks. A provider adds a small adapter, like
   [`okta.go`](internal/connector/okta.go), saying which claims identify someone and what to refuse.
+- **Orgs own domains, and connections belong to an org.** Google and Okta connections accept only
+  their org's domains, and Microsoft connections only their tenant. If two orgs claim a domain, nobody
+  is routed there, because picking one could send someone to another customer's provider.
+- **The sign-in page doesn't list customers.** It only lists connections marked `ShowOnSignInPage`,
+  meaning staff's.
 - **Client secrets are never stored in Firestore.** The broker reads each from an
   `AUTH_MCP_SECRET_<CONNECTION_ID>` environment variable, which the dev stack sets to mock values.
 - **One emulator per project.** A single Auth emulator sends every API-key sign-in, which is how

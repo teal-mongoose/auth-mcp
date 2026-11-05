@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	collectionOrgs        = "orgs"
 	collectionApps        = "apps"
 	collectionConnections = "connections"
 	collectionLinks       = "links"
@@ -33,16 +34,27 @@ type App struct {
 	RedirectURIs []string `firestore:"redirect_uris"`
 }
 
-// Connection is one provider setup. Its client secret is never stored here.
+// Org is a customer, or Healthspaces itself. Email in its domains routes to its connections, and
+// Google and Okta connections accept only these domains.
+type Org struct {
+	ID      string   `firestore:"-"`
+	Name    string   `firestore:"name"`
+	Domains []string `firestore:"domains"`
+}
+
+// Connection is one provider setup, belonging to one org. Its client secret is never stored here.
 type Connection struct {
 	ID       string         `firestore:"-"`
+	OrgID    string         `firestore:"org_id"`
 	Name     string         `firestore:"name"`
 	Kind     connector.Kind `firestore:"kind"`
 	Issuer   string         `firestore:"issuer"`
 	ClientID string         `firestore:"client_id"`
-	Domains  []string       `firestore:"domains"`
 	TenantID string         `firestore:"tenant_id"`
 	Enabled  bool           `firestore:"enabled"`
+	// ShowOnSignInPage lists it on the sign-in page, for staff. Customers are found by email domain
+	// instead, so the page doesn't reveal who they are.
+	ShowOnSignInPage bool `firestore:"show_on_sign_in_page"`
 }
 
 // Link ties a person at a connection to a Firebase uid in one project.
@@ -73,6 +85,7 @@ type authCode struct {
 	AppID       string    `firestore:"app_id"`
 	ProjectID   string    `firestore:"project_id"`
 	UID         string    `firestore:"uid"`
+	OrgID       string    `firestore:"org_id"`
 	RedirectURI string    `firestore:"redirect_uri"`
 	Challenge   string    `firestore:"code_challenge"`
 	ExpiresAt   time.Time `firestore:"expires_at"`
@@ -84,6 +97,7 @@ type Event struct {
 	Outcome      string    `firestore:"outcome"`
 	Reason       string    `firestore:"reason"`
 	AppID        string    `firestore:"app_id"`
+	OrgID        string    `firestore:"org_id"`
 	ConnectionID string    `firestore:"connection_id"`
 	Subject      string    `firestore:"subject"`
 	Email        string    `firestore:"email"`
@@ -149,6 +163,41 @@ func consume[T any](ctx context.Context, s *Store, collection, id string) (T, er
 	return out, err
 }
 
+// Org returns an org, and when it last changed.
+func (s *Store) Org(ctx context.Context, id string) (Org, time.Time, error) {
+	org, snap, err := getDoc[Org](ctx, s, collectionOrgs, id)
+	org.ID = id
+	if err != nil {
+		return org, time.Time{}, err
+	}
+	return org, snap.UpdateTime, nil
+}
+
+// OrgsForDomain returns the orgs claiming an email domain. More than one is a configuration problem,
+// which callers must refuse rather than guess at.
+func (s *Store) OrgsForDomain(ctx context.Context, domain string) ([]Org, error) {
+	snaps, err := s.fs.Collection(collectionOrgs).Where("domains", "array-contains", domain).Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	orgs := make([]Org, 0, len(snaps))
+	for _, snap := range snaps {
+		var org Org
+		if err := snap.DataTo(&org); err != nil {
+			return nil, err
+		}
+		org.ID = snap.Ref.ID
+		orgs = append(orgs, org)
+	}
+	return orgs, nil
+}
+
+// PutOrg saves an org.
+func (s *Store) PutOrg(ctx context.Context, org Org) error {
+	_, err := s.fs.Collection(collectionOrgs).Doc(org.ID).Set(ctx, org)
+	return err
+}
+
 // App returns a registered app.
 func (s *Store) App(ctx context.Context, id string) (App, error) {
 	app, _, err := getDoc[App](ctx, s, collectionApps, id)
@@ -192,6 +241,24 @@ func (s *Store) Connections(ctx context.Context) ([]Connection, error) {
 		connection.ID = snap.Ref.ID
 		connections = append(connections, connection)
 	}
+}
+
+// ConnectionsForOrg returns an org's connections.
+func (s *Store) ConnectionsForOrg(ctx context.Context, orgID string) ([]Connection, error) {
+	snaps, err := s.fs.Collection(collectionConnections).Where("org_id", "==", orgID).Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	connections := make([]Connection, 0, len(snaps))
+	for _, snap := range snaps {
+		var connection Connection
+		if err := snap.DataTo(&connection); err != nil {
+			return nil, err
+		}
+		connection.ID = snap.Ref.ID
+		connections = append(connections, connection)
+	}
+	return connections, nil
 }
 
 // PutConnection saves a connection.

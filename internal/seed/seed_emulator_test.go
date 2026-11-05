@@ -273,7 +273,7 @@ func TestFirestoreEmulatorWorks(t *testing.T) {
 func TestStackIsReachable(t *testing.T) {
 	setup(t)
 
-	urls := []string{"http://" + devenv.BindAddr + "/healthz", "http://" + devenv.TestAppAAddr + "/", "http://" + devenv.TestAppBAddr + "/"}
+	urls := []string{"http://" + devenv.BindAddr + "/healthz", "http://" + devenv.TestAppAAddr + "/", "http://" + devenv.TestAppBAddr + "/", "http://" + devenv.TestAdminAddr + "/"}
 	for _, provider := range mockidp.Providers() {
 		urls = append(urls, "http://"+provider.Addr+"/oidc/.well-known/openid-configuration")
 	}

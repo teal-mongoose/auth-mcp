@@ -53,7 +53,11 @@ func Accounts() map[string][]Account {
 				UID: "seed-customer-c", Email: "user@customer-c.test", Name: "Customer C User",
 				ProviderID: "microsoft.com", ProviderUID: "oid-customer-c",
 			},
-			{UID: "seed-admin-claim", Email: "admin-claim@customer-a.test", Name: "Provider Sends Admin"},
+			{
+				// The stale org must be replaced by the connection's when they sign in.
+				UID: "seed-admin-claim", Email: "admin-claim@customer-a.test", Name: "Provider Sends Admin",
+				Claims: map[string]any{"org": "stale-org"},
+			},
 			{UID: "seed-disabled", Email: "disabled@customer-a.test", Name: "Disabled User", Disabled: true},
 			{
 				// Tools must show this claim's name but not its value.
@@ -68,39 +72,59 @@ func Accounts() map[string][]Account {
 	}
 }
 
-// Test app ids.
+// Org ids.
 const (
-	AppA = "test-app-a"
-	AppB = "test-app-b"
+	OrgHealthspaces = "healthspaces"
+	OrgCustomerA    = "customer-a"
+	OrgCustomerB    = "customer-b"
+	OrgCustomerC    = "customer-c"
 )
 
-// Apps lists the registered test apps.
+// Orgs lists the customers, and Healthspaces itself.
+func Orgs() []broker.Org {
+	return []broker.Org{
+		{ID: OrgHealthspaces, Name: "Healthspaces", Domains: []string{"healthspaces.test"}},
+		{ID: OrgCustomerA, Name: "Customer A", Domains: []string{"customer-a.test"}},
+		{ID: OrgCustomerB, Name: "Customer B", Domains: []string{"customer-b.test"}},
+		{ID: OrgCustomerC, Name: "Customer C", Domains: []string{"customer-c.test"}},
+	}
+}
+
+// Test app ids.
+const (
+	AppA     = "test-app-a"
+	AppB     = "test-app-b"
+	AppAdmin = "test-admin"
+)
+
+// Apps lists the registered test apps. Test Admin signs in to the broker's own project, as the admin
+// screen will.
 func Apps() []broker.App {
 	return []broker.App{
 		{ID: AppA, Name: "Test App A", ProjectID: devenv.AppAProject, RedirectURIs: []string{"http://" + devenv.TestAppAAddr + "/"}},
 		{ID: AppB, Name: "Test App B", ProjectID: devenv.AppBProject, RedirectURIs: []string{"http://" + devenv.TestAppBAddr + "/"}},
+		{ID: AppAdmin, Name: "Test Admin", ProjectID: devenv.BrokerProject, RedirectURIs: []string{"http://" + devenv.TestAdminAddr + "/"}},
 	}
 }
 
 // Connection ids.
 const (
-	ConnectionGoogle         = "staff-google"
-	ConnectionOktaA          = "customer-a-okta"
-	ConnectionOktaB          = "customer-b-okta"
-	ConnectionMicrosoftC     = "customer-c-microsoft"
-	ConnectionMicrosoftOther = "other-tenant-microsoft"
+	ConnectionGoogle     = "staff-google"
+	ConnectionOktaA      = "customer-a-okta"
+	ConnectionOktaB      = "customer-b-okta"
+	ConnectionMicrosoftC = "customer-c-microsoft"
 )
 
 // connectionMocks says which mock provider each connection uses.
 var connectionMocks = map[string]string{
-	ConnectionGoogle:         mockidp.Google,
-	ConnectionOktaA:          mockidp.OktaA,
-	ConnectionOktaB:          mockidp.OktaB,
-	ConnectionMicrosoftC:     mockidp.MicrosoftC,
-	ConnectionMicrosoftOther: mockidp.MicrosoftOther,
+	ConnectionGoogle:     mockidp.Google,
+	ConnectionOktaA:      mockidp.OktaA,
+	ConnectionOktaB:      mockidp.OktaB,
+	ConnectionMicrosoftC: mockidp.MicrosoftC,
 }
 
-func mockProvider(name string) mockidp.Config {
+// MockProvider returns the config of a mock provider.
+func MockProvider(name string) mockidp.Config {
 	for _, config := range mockidp.Providers() {
 		if config.Name == name {
 			return config
@@ -111,31 +135,32 @@ func mockProvider(name string) mockidp.Config {
 
 // MockIssuer returns the issuer of a mock provider at its usual address.
 func MockIssuer(name string) string {
-	return "http://" + mockProvider(name).Addr + "/oidc"
+	return "http://" + MockProvider(name).Addr + "/oidc"
 }
 
-// Connections lists the connections to the mock providers.
+// Connections lists the connections to the mock providers. Only staff's is listed on the sign-in page.
 func Connections() []broker.Connection {
-	connection := func(id, name string, kind connector.Kind, domains []string, tenantID string) broker.Connection {
-		mock := mockProvider(connectionMocks[id])
+	connection := func(id, orgID, name string, kind connector.Kind, tenantID string) broker.Connection {
+		mock := MockProvider(connectionMocks[id])
 		return broker.Connection{
-			ID: id, Name: name, Kind: kind, Issuer: MockIssuer(mock.Name), ClientID: mock.ClientID,
-			Domains: domains, TenantID: tenantID, Enabled: true,
+			ID: id, OrgID: orgID, Name: name, Kind: kind, Issuer: MockIssuer(mock.Name), ClientID: mock.ClientID,
+			TenantID: tenantID, Enabled: true,
 		}
 	}
+	staff := connection(ConnectionGoogle, OrgHealthspaces, "Healthspaces staff (mock Google)", connector.KindGoogle, "")
+	staff.ShowOnSignInPage = true
 	return []broker.Connection{
-		connection(ConnectionGoogle, "Healthspaces staff (mock Google)", connector.KindGoogle, []string{"healthspaces.test"}, ""),
-		connection(ConnectionOktaA, "Customer A (mock Okta)", connector.KindOkta, []string{"customer-a.test"}, ""),
-		connection(ConnectionOktaB, "Customer B (mock Okta)", connector.KindOkta, []string{"customer-b.test"}, ""),
-		connection(ConnectionMicrosoftC, "Customer C (mock Microsoft)", connector.KindMicrosoft, nil, "tenant-customer-c"),
-		connection(ConnectionMicrosoftOther, "Other tenant (mock Microsoft)", connector.KindMicrosoft, nil, "tenant-other"),
+		staff,
+		connection(ConnectionOktaA, OrgCustomerA, "Customer A (mock Okta)", connector.KindOkta, ""),
+		connection(ConnectionOktaB, OrgCustomerB, "Customer B (mock Okta)", connector.KindOkta, ""),
+		connection(ConnectionMicrosoftC, OrgCustomerC, "Customer C (mock Microsoft)", connector.KindMicrosoft, "tenant-customer-c"),
 	}
 }
 
 // SetConnectionSecrets puts the mock client secrets where the broker reads them.
 func SetConnectionSecrets() error {
 	for id, mock := range connectionMocks {
-		if err := os.Setenv(broker.SecretEnvName(id), mockProvider(mock).ClientSecret); err != nil {
+		if err := os.Setenv(broker.SecretEnvName(id), MockProvider(mock).ClientSecret); err != nil {
 			return err
 		}
 	}

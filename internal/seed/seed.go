@@ -28,6 +28,11 @@ func Run(ctx context.Context, cfg safety.Config, clients map[string]*auth.Client
 }
 
 func seedBroker(ctx context.Context, store *broker.Store) error {
+	for _, org := range fixtures.Orgs() {
+		if err := store.PutOrg(ctx, org); err != nil {
+			return fmt.Errorf("seeding org %s: %w", org.ID, err)
+		}
+	}
 	for _, app := range fixtures.Apps() {
 		if err := store.PutApp(ctx, app); err != nil {
 			return fmt.Errorf("seeding app %s: %w", app.ID, err)

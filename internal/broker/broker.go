@@ -1,9 +1,12 @@
 // Package broker is the sign-in flow apps use.
 //
-// An app sends someone to GET /authorize. They sign in at a provider, and come back to GET /callback.
+// An app sends someone to GET /authorize. If they aren't sent to a specific connection, the sign-in page
+// asks for their email and POST /authorize routes them by its domain. They sign in at a provider, and
+// come back to GET /callback.
 // If the broker knows them, the app gets a single-use code at its registered redirect URI, and
 // exchanges it at POST /token for a Firebase custom token in its own project. From there, Firebase
-// sessions, claims and security rules work as usual.
+// sessions, claims and security rules work as usual. The token carries an org claim, which comes from
+// the connection, never from anything the provider sends.
 //
 // A custom token is created only at exchange. It's never stored, and never appears in a URL.
 package broker
@@ -35,6 +38,14 @@ import (
 )
 
 const (
+	// baseCSP allows no scripts, no framing and no form posts.
+	baseCSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
+	// noFormsCSP is for every page without a form. The sign-in page leaves form-action out, because
+	// browsers apply it to redirects too, and its form redirects to the person's provider.
+	noFormsCSP = baseCSP + "; form-action 'none'"
+)
+
+const (
 	pendingTTL      = 10 * time.Minute
 	codeTTL         = time.Minute
 	maxTokenBody    = 16 << 10
@@ -57,6 +68,8 @@ const (
 	reasonCodeWrongApp      = "code_for_another_app"
 	reasonCodeWrongRedirect = "code_for_another_redirect"
 	reasonCodeWrongVerifier = "wrong_pkce_verifier"
+	reasonUnknownDomain     = "unknown_domain"
+	reasonAmbiguousDomain   = "ambiguous_domain"
 )
 
 // Errors apps see, following OAuth's names.
@@ -73,6 +86,8 @@ const (
 	browserProblemMessage    = "This sign-in link isn't valid in this browser. Go back to the app and try again."
 	expiredProblemMessage    = "This sign-in has expired or was already used. Go back to the app and try again."
 	unknownAppProblemMessage = "This app or return address isn't registered."
+	notAnEmailMessage        = "Enter your full work email address."
+	noSignInMessage          = "We can't find a sign-in for that address. Check it, or ask your administrator."
 )
 
 var (
@@ -116,8 +131,9 @@ type Broker struct {
 }
 
 type cachedConnector struct {
-	updated   time.Time
-	connector *connector.Connector
+	connectionUpdated time.Time
+	orgUpdated        time.Time
+	connector         *connector.Connector
 }
 
 // New returns a Broker.
@@ -136,6 +152,7 @@ func New(cfg Config) *Broker {
 func (b *Broker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /authorize", b.authorize)
+	mux.HandleFunc("POST /authorize", b.route)
 	mux.HandleFunc("GET /callback", b.callback)
 	mux.HandleFunc("POST /token", b.token)
 	return securityHeaders(mux)
@@ -149,60 +166,149 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+		h.Set("Content-Security-Policy", noFormsCSP)
 		next.ServeHTTP(w, r)
 	})
 }
 
-func (b *Broker) authorize(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	query := r.URL.Query()
-	appID := query.Get("app_id")
-	redirectURI := query.Get("redirect_uri")
+// authRequest is a checked request from an app to start a sign-in.
+type authRequest struct {
+	app         App
+	redirectURI string
+	state       string
+	challenge   string
+}
+
+// values returns the request's parameters, for carrying them through the sign-in page.
+func (req authRequest) values() url.Values {
+	return url.Values{
+		"app_id":                {req.app.ID},
+		"redirect_uri":          {req.redirectURI},
+		"state":                 {req.state},
+		"code_challenge":        {req.challenge},
+		"code_challenge_method": {"S256"},
+	}
+}
+
+// parseAuthRequest checks a request to start a sign-in. If it returns false, it has already responded.
+func (b *Broker) parseAuthRequest(w http.ResponseWriter, r *http.Request, values url.Values) (authRequest, bool) {
+	redirectURI := values.Get("redirect_uri")
 
 	// Until the redirect URI is known to be registered, problems must never redirect anywhere.
-	app, err := b.config.Store.App(ctx, appID)
+	app, err := b.config.Store.App(r.Context(), values.Get("app_id"))
 	if errors.Is(err, ErrNotFound) {
 		renderProblem(w, http.StatusBadRequest, unknownAppProblemMessage)
-		return
+		return authRequest{}, false
 	}
 	if err != nil {
 		b.serverError(w, "reading app", err)
-		return
+		return authRequest{}, false
 	}
 	if !slices.Contains(app.RedirectURIs, redirectURI) {
 		renderProblem(w, http.StatusBadRequest, unknownAppProblemMessage)
+		return authRequest{}, false
+	}
+
+	state := values.Get("state")
+	challenge := values.Get("code_challenge")
+	if state == "" || len(state) > maxAppStateSize ||
+		values.Get("code_challenge_method") != "S256" || !challengePattern.MatchString(challenge) {
+		redirectResult(w, r, redirectURI, url.Values{"error": {errorInvalidRequest}, "state": {state}})
+		return authRequest{}, false
+	}
+
+	return authRequest{app: app, redirectURI: redirectURI, state: state, challenge: challenge}, true
+}
+
+func (b *Broker) authorize(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	req, ok := b.parseAuthRequest(w, r, query)
+	if !ok {
 		return
 	}
 
-	appState := query.Get("state")
-	challenge := query.Get("code_challenge")
-	if appState == "" || len(appState) > maxAppStateSize ||
-		query.Get("code_challenge_method") != "S256" || !challengePattern.MatchString(challenge) {
-		redirectResult(w, r, redirectURI, url.Values{"error": {errorInvalidRequest}, "state": {appState}})
+	if connectionID := query.Get("connection"); connectionID != "" {
+		b.startSignIn(w, r, req, connectionID)
+		return
+	}
+	b.renderSignInPage(w, r, req, "")
+}
+
+// route sends someone to their org's connection, going by the domain of the email they typed. It's a
+// POST so that the address stays out of URLs and logs. The address is unverified, so it only decides
+// where to send them. The provider decides who they are.
+func (b *Broker) route(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	r.Body = http.MaxBytesReader(w, r.Body, maxTokenBody)
+	if err := r.ParseForm(); err != nil {
+		renderProblem(w, http.StatusBadRequest, unknownAppProblemMessage)
+		return
+	}
+	req, ok := b.parseAuthRequest(w, r, r.PostForm)
+	if !ok {
 		return
 	}
 
-	connectionID := query.Get("connection")
-	if connectionID == "" {
-		b.renderChooser(w, r, app)
+	domain, ok := connector.EmailDomain(strings.TrimSpace(r.PostForm.Get("email")))
+	if !ok {
+		b.renderSignInPage(w, r, req, notAnEmailMessage)
 		return
 	}
 
-	conn, err := b.connectorFor(ctx, connectionID)
+	orgs, err := b.config.Store.OrgsForDomain(ctx, domain)
 	if err != nil {
-		b.refuseConnection(w, r, err, app.ID, connectionID, redirectURI, appState)
+		b.serverError(w, "finding org", err)
+		return
+	}
+	switch len(orgs) {
+	case 0:
+		b.record(ctx, Event{Outcome: OutcomeRefused, Reason: reasonUnknownDomain, AppID: req.app.ID})
+		b.renderSignInPage(w, r, req, noSignInMessage)
+		return
+	case 1:
+	default:
+		// Picking one could send someone to another customer's provider.
+		slog.Error("several orgs claim one domain", "domain", domain)
+		b.record(ctx, Event{Outcome: OutcomeRefused, Reason: reasonAmbiguousDomain, AppID: req.app.ID})
+		b.renderSignInPage(w, r, req, noSignInMessage)
+		return
+	}
+	org := orgs[0]
+
+	connections, err := b.config.Store.ConnectionsForOrg(ctx, org.ID)
+	if err != nil {
+		b.serverError(w, "listing connections", err)
+		return
+	}
+	connections = slices.DeleteFunc(connections, func(c Connection) bool { return !c.Enabled })
+
+	switch len(connections) {
+	case 0:
+		b.record(ctx, Event{Outcome: OutcomeRefused, Reason: reasonConnectionMissing, AppID: req.app.ID, OrgID: org.ID})
+		b.renderSignInPage(w, r, req, noSignInMessage)
+	case 1:
+		b.startSignIn(w, r, req, connections[0].ID)
+	default:
+		renderSignInChoices(w, req, connections, "", false)
+	}
+}
+
+// startSignIn sends the browser to a connection's provider.
+func (b *Broker) startSignIn(w http.ResponseWriter, r *http.Request, req authRequest, connectionID string) {
+	conn, _, err := b.connectorFor(r.Context(), connectionID)
+	if err != nil {
+		b.refuseConnection(w, r, err, req.app.ID, connectionID, req.redirectURI, req.state)
 		return
 	}
 
 	authURL, pending := conn.Begin()
 	binding := rand.Text()
-	err = b.config.Store.putPending(ctx, pending.State, pendingSignIn{
-		AppID:        app.ID,
+	err = b.config.Store.putPending(r.Context(), pending.State, pendingSignIn{
+		AppID:        req.app.ID,
 		ConnectionID: connectionID,
-		RedirectURI:  redirectURI,
-		AppState:     appState,
-		Challenge:    challenge,
+		RedirectURI:  req.redirectURI,
+		AppState:     req.state,
+		Challenge:    req.challenge,
 		Nonce:        pending.Nonce,
 		Verifier:     pending.Verifier,
 		BindingHash:  hash(binding),
@@ -271,11 +377,12 @@ func (b *Broker) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := b.connectorFor(ctx, pending.ConnectionID)
+	conn, connection, err := b.connectorFor(ctx, pending.ConnectionID)
 	if err != nil {
 		b.refuseConnection(w, r, err, pending.AppID, pending.ConnectionID, pending.RedirectURI, pending.AppState)
 		return
 	}
+	base.OrgID = connection.OrgID
 
 	identity, err := conn.Complete(ctx, connector.Pending{
 		State:    state,
@@ -322,6 +429,7 @@ func (b *Broker) callback(w http.ResponseWriter, r *http.Request) {
 		AppID:       app.ID,
 		ProjectID:   app.ProjectID,
 		UID:         uid,
+		OrgID:       connection.OrgID,
 		RedirectURI: pending.RedirectURI,
 		Challenge:   pending.Challenge,
 		ExpiresAt:   b.config.Now().Add(codeTTL),
@@ -456,7 +564,7 @@ func (b *Broker) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	event := Event{AppID: appID, UID: doc.UID}
+	event := Event{AppID: appID, UID: doc.UID, OrgID: doc.OrgID}
 	switch {
 	case b.config.Now().After(doc.ExpiresAt):
 		event.Reason = reasonCodeExpired
@@ -490,7 +598,7 @@ func (b *Broker) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	customToken, err := client.CustomToken(ctx, doc.UID)
+	customToken, err := client.CustomTokenWithClaims(ctx, doc.UID, map[string]any{"org": doc.OrgID})
 	if err != nil {
 		b.tokenServerError(w, "creating token", err)
 		return
@@ -529,30 +637,38 @@ func originRegistered(app App, origin string) bool {
 
 var errConnectionUnavailable = errors.New("connection missing or disabled")
 
-// connectorFor returns the connector for an enabled connection. It reads the connection every time,
-// so that disabling one takes effect at once.
-func (b *Broker) connectorFor(ctx context.Context, id string) (*connector.Connector, error) {
-	connection, updated, err := b.config.Store.Connection(ctx, id)
+// connectorFor returns the connector for an enabled connection, and the connection. It reads the
+// connection and its org every time, so that disabling one or changing a domain takes effect at once.
+func (b *Broker) connectorFor(ctx context.Context, id string) (*connector.Connector, Connection, error) {
+	connection, connectionUpdated, err := b.config.Store.Connection(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		return nil, errConnectionUnavailable
+		return nil, Connection{}, errConnectionUnavailable
 	}
 	if err != nil {
-		return nil, err
+		return nil, Connection{}, err
 	}
 	if !connection.Enabled {
-		return nil, errConnectionUnavailable
+		return nil, Connection{}, errConnectionUnavailable
+	}
+
+	org, orgUpdated, err := b.config.Store.Org(ctx, connection.OrgID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, Connection{}, errConnectionUnavailable
+	}
+	if err != nil {
+		return nil, Connection{}, err
 	}
 
 	b.mu.Lock()
 	cached, ok := b.connectors[id]
 	b.mu.Unlock()
-	if ok && cached.updated.Equal(updated) {
-		return cached.connector, nil
+	if ok && cached.connectionUpdated.Equal(connectionUpdated) && cached.orgUpdated.Equal(orgUpdated) {
+		return cached.connector, connection, nil
 	}
 
 	secret, err := b.config.Secret(id)
 	if err != nil {
-		return nil, err
+		return nil, Connection{}, err
 	}
 	conn, err := connector.New(ctx, connector.Config{
 		ID:           id,
@@ -561,17 +677,17 @@ func (b *Broker) connectorFor(ctx context.Context, id string) (*connector.Connec
 		ClientID:     connection.ClientID,
 		ClientSecret: secret,
 		RedirectURL:  b.config.BaseURL + "/callback",
-		Domains:      connection.Domains,
+		Domains:      org.Domains,
 		TenantID:     connection.TenantID,
 	})
 	if err != nil {
-		return nil, err
+		return nil, Connection{}, err
 	}
 
 	b.mu.Lock()
-	b.connectors[id] = cachedConnector{updated: updated, connector: conn}
+	b.connectors[id] = cachedConnector{connectionUpdated: connectionUpdated, orgUpdated: orgUpdated, connector: conn}
 	b.mu.Unlock()
-	return conn, nil
+	return conn, connection, nil
 }
 
 func (b *Broker) refuseConnection(w http.ResponseWriter, r *http.Request, err error, appID, connectionID, redirectURI, appState string) {
@@ -649,48 +765,73 @@ func renderProblem(w http.ResponseWriter, status int, message string) {
 	}
 }
 
-var chooserPage = template.Must(template.New("chooser").Parse(`<!doctype html>
+var signInPage = template.Must(template.New("signin").Parse(`<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <title>Sign in to {{.App}}</title>
 <body style="font-family: system-ui; max-width: 32rem; margin: 3rem auto">
 <h1>Sign in to {{.App}}</h1>
-<ul>
+{{if .Message}}<p role="alert">{{.Message}}</p>
+{{end}}{{if .ShowEmail}}<form method="post" action="/authorize">
+{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+{{end}}<label>Work email <input type="email" name="email" autocomplete="email" required autofocus></label>
+<button type="submit">Continue</button>
+</form>
+{{end}}{{if .Choices}}<ul>
 {{range .Choices}}<li><a href="{{.URL}}">{{.Name}}</a></li>
 {{end}}</ul>
-</body>
+{{end}}</body>
 </html>
 `))
 
-type chooserChoice struct {
+type signInChoice struct {
 	Name string
 	URL  string
 }
 
-func (b *Broker) renderChooser(w http.ResponseWriter, r *http.Request, app App) {
+type hiddenField struct {
+	Name  string
+	Value string
+}
+
+// renderSignInPage asks for an email, and lists the connections marked to show there, such as staff's.
+func (b *Broker) renderSignInPage(w http.ResponseWriter, r *http.Request, req authRequest, message string) {
 	connections, err := b.config.Store.Connections(r.Context())
 	if err != nil {
 		b.serverError(w, "listing connections", err)
 		return
 	}
+	connections = slices.DeleteFunc(connections, func(c Connection) bool { return !c.Enabled || !c.ShowOnSignInPage })
+	renderSignInChoices(w, req, connections, message, true)
+}
 
-	choices := []chooserChoice{}
-	for _, connection := range connections {
-		if !connection.Enabled {
-			continue
-		}
-		query := r.URL.Query()
-		query.Set("connection", connection.ID)
-		choices = append(choices, chooserChoice{Name: connection.Name, URL: "/authorize?" + query.Encode()})
+func renderSignInChoices(w http.ResponseWriter, req authRequest, connections []Connection, message string, showEmail bool) {
+	values := req.values()
+
+	hidden := make([]hiddenField, 0, len(values))
+	for name := range values {
+		hidden = append(hidden, hiddenField{Name: name, Value: values.Get(name)})
 	}
-	slices.SortFunc(choices, func(a, b chooserChoice) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(hidden, func(a, b hiddenField) int { return strings.Compare(a.Name, b.Name) })
+
+	choices := make([]signInChoice, 0, len(connections))
+	for _, connection := range connections {
+		query := req.values()
+		query.Set("connection", connection.ID)
+		choices = append(choices, signInChoice{Name: connection.Name, URL: "/authorize?" + query.Encode()})
+	}
+	slices.SortFunc(choices, func(a, b signInChoice) int { return strings.Compare(a.Name, b.Name) })
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	err = chooserPage.Execute(w, struct {
-		App     string
-		Choices []chooserChoice
-	}{App: app.Name, Choices: choices})
+	w.Header().Set("Content-Security-Policy", baseCSP)
+	err := signInPage.Execute(w, struct {
+		App       string
+		Message   string
+		ShowEmail bool
+		Hidden    []hiddenField
+		Choices   []signInChoice
+	}{App: req.app.Name, Message: message, ShowEmail: showEmail, Hidden: hidden, Choices: choices})
 	if err != nil {
-		slog.Error("rendering chooser", "error", err)
+		slog.Error("rendering sign-in page", "error", err)
 	}
 }
