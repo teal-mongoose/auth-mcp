@@ -3,9 +3,9 @@
 The go-between for sign-in. Apps send people here to sign in with Google, Microsoft, Okta or a future
 provider, and get back an ordinary Firebase login. Healthspaces admins manage it through MCP tools.
 
-**Status: phase 4 of 7.** Sign-in works end to end against the mock providers, for staff and several
-customers. There are no MCP tools yet (phase 5). The full plan is in
-[`../mcp-auth-plan.md`](../mcp-auth-plan.md).
+**Status: phase 5 of 7.** Sign-in works end to end against the mock providers, for staff and several
+customers, and admins can inspect it through read-only MCP tools. There's no admin screen yet (phase
+6). The full plan is in [`../mcp-auth-plan.md`](../mcp-auth-plan.md).
 
 Everything runs on this machine, with emulators, mock providers and generic test accounts. It can't
 reach a real Firebase project.
@@ -67,6 +67,30 @@ accounts, apps and connections in [`internal/fixtures/fixtures.go`](internal/fix
 A person is recognized through a link, or through their existing Google or Microsoft account in the
 app's Firebase project. Anyone else is refused, and email is never used to match them.
 
+## Admin tools
+
+The MCP server is at `POST /mcp`, using stateless Streamable HTTP. Its tools are all read-only:
+
+| Tool | Purpose |
+| --- | --- |
+| `list_apps` | Registered apps and their return URLs |
+| `list_orgs`, `get_org` | Customers, their domains and their connections |
+| `list_connections`, `get_connection` | Provider connections and status, never secrets |
+| `get_user` | Find a user in one app's project, by uid or email |
+| `list_users` | Page through one app's users |
+| `get_user_links` | A user's linked provider identities |
+| `list_sign_in_events` | Recent sign-ins and refusals, with the reason |
+
+Every request needs `Authorization: Bearer <Firebase ID token>`:
+
+- The token must be from the broker's own project, so an admin in an app's project gets nothing here.
+- It must carry `admin: true` and `org: healthspaces`. Anyone else gets a `403`.
+- Missing, invalid, expired or revoked tokens, and disabled accounts, get a `401`.
+- Browsers may only call it from an allowed origin, currently the Test Admin page.
+
+Claim values are shown only for `admin`, `org`, `practice`, `clinic`, `roles` and `role`. Any other
+claim appears by name in `hidden_claims`. Each call logs who, which tool, what target and the result.
+
 ## Check it
 
 ```bash
@@ -125,4 +149,4 @@ go test -tags=emulator -count=1 -p 1 ./...
 | `github.com/oauth2-proxy/mockoidc` | `v0.0.0-20261103160011-e06ed0b7cb7f` (no tagged release) | Phase 1, dev and tests only |
 | `github.com/coreos/go-oidc/v3` | v3.21.0 | Phase 1 tests; server from phase 2 |
 | `golang.org/x/oauth2` | v0.37.0 | Phase 1 tests; server from phase 2 |
-| `github.com/modelcontextprotocol/go-sdk` | v1.8.0 | Not in `go.mod` until phase 5 |
+| `github.com/modelcontextprotocol/go-sdk` | v1.8.0 | Phase 5 |

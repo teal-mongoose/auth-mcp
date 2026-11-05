@@ -74,7 +74,7 @@ func Accounts() map[string][]Account {
 
 // Org ids.
 const (
-	OrgHealthspaces = "healthspaces"
+	OrgHealthspaces = devenv.AdminOrg
 	OrgCustomerA    = "customer-a"
 	OrgCustomerB    = "customer-b"
 	OrgCustomerC    = "customer-c"

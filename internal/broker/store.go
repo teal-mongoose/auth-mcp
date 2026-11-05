@@ -192,6 +192,24 @@ func (s *Store) OrgsForDomain(ctx context.Context, domain string) ([]Org, error)
 	return orgs, nil
 }
 
+// Orgs returns every org.
+func (s *Store) Orgs(ctx context.Context) ([]Org, error) {
+	snaps, err := s.fs.Collection(collectionOrgs).Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	orgs := make([]Org, 0, len(snaps))
+	for _, snap := range snaps {
+		var org Org
+		if err := snap.DataTo(&org); err != nil {
+			return nil, err
+		}
+		org.ID = snap.Ref.ID
+		orgs = append(orgs, org)
+	}
+	return orgs, nil
+}
+
 // PutOrg saves an org.
 func (s *Store) PutOrg(ctx context.Context, org Org) error {
 	_, err := s.fs.Collection(collectionOrgs).Doc(org.ID).Set(ctx, org)
@@ -203,6 +221,24 @@ func (s *Store) App(ctx context.Context, id string) (App, error) {
 	app, _, err := getDoc[App](ctx, s, collectionApps, id)
 	app.ID = id
 	return app, err
+}
+
+// Apps returns every registered app.
+func (s *Store) Apps(ctx context.Context) ([]App, error) {
+	snaps, err := s.fs.Collection(collectionApps).Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	apps := make([]App, 0, len(snaps))
+	for _, snap := range snaps {
+		var app App
+		if err := snap.DataTo(&app); err != nil {
+			return nil, err
+		}
+		app.ID = snap.Ref.ID
+		apps = append(apps, app)
+	}
+	return apps, nil
 }
 
 // PutApp saves an app.
@@ -275,6 +311,26 @@ func linkID(connectionID, subject, projectID string) string {
 func (s *Store) LinkedUID(ctx context.Context, connectionID, subject, projectID string) (string, error) {
 	link, _, err := getDoc[Link](ctx, s, collectionLinks, linkID(connectionID, subject, projectID))
 	return link.UID, err
+}
+
+// LinksForUser returns the links to a uid in a project.
+func (s *Store) LinksForUser(ctx context.Context, projectID, uid string) ([]Link, error) {
+	snaps, err := s.fs.Collection(collectionLinks).
+		Where("project_id", "==", projectID).
+		Where("uid", "==", uid).
+		Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	links := make([]Link, 0, len(snaps))
+	for _, snap := range snaps {
+		var link Link
+		if err := snap.DataTo(&link); err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	return links, nil
 }
 
 // PutLink saves a link.

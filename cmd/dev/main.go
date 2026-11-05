@@ -101,16 +101,16 @@ func run() error {
 		defer func() { _ = testApp.Close() }()
 	}
 
-	b, closeBroker, err := devenv.NewBroker(ctx, devenv.BaseURL)
+	handler, closeHandler, err := devenv.NewHandler(ctx, devenv.BaseURL)
 	if err != nil {
 		return err
 	}
-	defer closeBroker()
+	defer closeHandler()
 
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	served := make(chan error, 1)
-	go func() { served <- srv.Serve(serveCtx, b.Handler()) }()
+	go func() { served <- srv.Serve(serveCtx, handler) }()
 
 	printSummary(srv.Addr(), providers)
 

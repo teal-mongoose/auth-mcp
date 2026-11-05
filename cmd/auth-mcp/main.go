@@ -29,12 +29,12 @@ func run() error {
 		return err
 	}
 
-	b, closeBroker, err := devenv.NewBroker(ctx, devenv.BaseURL)
+	handler, closeHandler, err := devenv.NewHandler(ctx, devenv.BaseURL)
 	if err != nil {
 		return err
 	}
-	defer closeBroker()
+	defer closeHandler()
 
 	slog.Info("auth-mcp listening", "addr", srv.Addr())
-	return srv.Serve(ctx, b.Handler())
+	return srv.Serve(ctx, handler)
 }

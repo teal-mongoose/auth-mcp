@@ -8,10 +8,13 @@ import (
 	"os"
 	"sync"
 
+	"net/http"
+
 	"cloud.google.com/go/firestore"
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/auth"
 
+	"github.com/teal-mongoose/auth-mcp/internal/admin"
 	"github.com/teal-mongoose/auth-mcp/internal/broker"
 	"github.com/teal-mongoose/auth-mcp/internal/safety"
 )
@@ -35,6 +38,9 @@ const (
 	TestAppBAddr   = "127.0.0.1:8712"
 	TestAdminAddr  = "127.0.0.1:8713"
 )
+
+// AdminOrg is the org whose admins may use the admin tools.
+const AdminOrg = "healthspaces"
 
 const (
 	authEmulatorEnv      = "FIREBASE_AUTH_EMULATOR_HOST"
@@ -138,9 +144,10 @@ func FirestoreClient(ctx context.Context) (*firestore.Client, error) {
 	return firestore.NewClient(ctx, BrokerProject)
 }
 
-// NewBroker builds a broker on the local emulators, with the given public URL. Run the safety check
-// first. The returned function releases its resources.
-func NewBroker(ctx context.Context, baseURL string) (*broker.Broker, func(), error) {
+// NewHandler builds the whole server's handler on the local emulators, with the given public URL: the
+// sign-in flow, and the admin MCP server at /mcp. Run the safety check first. The returned function
+// releases its resources.
+func NewHandler(ctx context.Context, baseURL string) (http.Handler, func(), error) {
 	clients, err := AuthClients(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -149,6 +156,16 @@ func NewBroker(ctx context.Context, baseURL string) (*broker.Broker, func(), err
 	if err != nil {
 		return nil, nil, err
 	}
-	b := broker.New(broker.Config{BaseURL: baseURL, Store: broker.NewStore(fs), Auth: clients})
-	return b, func() { _ = fs.Close() }, nil
+	store := broker.NewStore(fs)
+
+	mux := http.NewServeMux()
+	mux.Handle("/", broker.New(broker.Config{BaseURL: baseURL, Store: store, Auth: clients}).Handler())
+	mux.Handle("/mcp", admin.New(admin.Config{
+		Store:          store,
+		Auth:           clients,
+		AdminProject:   BrokerProject,
+		AdminOrg:       AdminOrg,
+		AllowedOrigins: []string{"http://" + TestAdminAddr},
+	}).Handler())
+	return mux, func() { _ = fs.Close() }, nil
 }
