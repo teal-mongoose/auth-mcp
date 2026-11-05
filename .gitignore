@@ -1,0 +1,18 @@
+# Build output
+/bin/
+*.exe
+*.test
+*.out
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Firebase
+*-debug.log
+.firebase/
+
+# OS
+.DS_Store
+Thumbs.db
