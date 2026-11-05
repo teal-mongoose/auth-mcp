@@ -90,6 +90,17 @@ func TestContentSecurityPolicy(t *testing.T) {
 	}
 }
 
+func TestContentSecurityPolicyForARealProject(t *testing.T) {
+	server := httptest.NewServer(Handler(Config{AppID: "test-admin", Name: "Test", BrokerURL: "http://localhost:8701"}))
+	defer server.Close()
+	res, _ := get(t, server.URL+"/")
+	policy := res.Header.Get("Content-Security-Policy")
+	want := "connect-src http://localhost:8701 https://identitytoolkit.googleapis.com https://securetoken.googleapis.com"
+	if !strings.Contains(policy, want) {
+		t.Errorf("policy %q is missing %q", policy, want)
+	}
+}
+
 func TestAssetsAreServedAndOthersAreNot(t *testing.T) {
 	server := serve(t)
 

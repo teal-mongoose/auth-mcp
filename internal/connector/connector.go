@@ -108,6 +108,9 @@ type Config struct {
 	// AllowLocal accepts plain http on this machine, and lifts the issuer pin for issuers there. It's
 	// only for mock providers.
 	AllowLocal bool
+	// AllowLocalRedirect accepts a plain http RedirectURL on this machine, while the provider stays real
+	// and pinned. It's for testing a real provider before there's anywhere to deploy.
+	AllowLocalRedirect bool
 }
 
 // localIssuer says whether this is a mock provider on this machine, where one is allowed.
@@ -129,7 +132,7 @@ func (c Config) validated() (Config, error) {
 	if err := checkURL("Issuer", c.Issuer, c.AllowLocal); err != nil {
 		errs = append(errs, err)
 	}
-	if err := checkURL("RedirectURL", c.RedirectURL, c.AllowLocal); err != nil {
+	if err := checkURL("RedirectURL", c.RedirectURL, c.AllowLocal || c.AllowLocalRedirect); err != nil {
 		errs = append(errs, err)
 	}
 

@@ -3,8 +3,10 @@
 The central sign-in broker for HealthSpaces apps, written in Go. Read `README.md` for how to run it,
 and `../mcp-auth-plan.md` for the plan and its decisions.
 
-- **Local only.** No deploys, no real Firebase projects, no real provider accounts and no service
-  account keys. Moving past that is Steps A-C in the plan, and each needs the owner's go-ahead.
+- **No deploys, and no real Firebase projects except a throwaway `auth-mcp-test-...` one.** This PC's default
+  credentials can reach real projects, so never loosen the project check in `internal/live`. No service
+  account keys. Don't read `.env.live`, and don't enter passwords: the owner does Google sign-ins. Moving past
+  this is Steps A-C in the plan, and each needs the owner's go-ahead.
 - **Don't change `@teal-mongoose/core` from this work.** It stays as it is until this server is ready
   to deploy.
 - **Security checks are never loosened to make something pass.** That covers `internal/safety`, and

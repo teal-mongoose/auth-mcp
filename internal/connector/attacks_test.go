@@ -632,6 +632,19 @@ func TestConfigIsValidated(t *testing.T) {
 		{"redirect over http", okta, func(c *Config) { c.RedirectURL = "http://auth.example/callback" }, "must use https"},
 		{"local issuer without permission", okta, func(c *Config) { c.Issuer = "http://127.0.0.1:9402/oidc" }, "must use https"},
 		{"local redirect without permission", okta, func(c *Config) { c.RedirectURL = "http://localhost:8701/callback" }, "must use https"},
+		{"local redirect permission doesn't allow a local issuer", okta, func(c *Config) {
+			c.AllowLocalRedirect = true
+			c.Issuer = "http://127.0.0.1:9402/oidc"
+		}, "must use https"},
+		{"local redirect permission doesn't lift the pin", google, func(c *Config) {
+			c.AllowLocalRedirect = true
+			c.RedirectURL = "http://localhost:8701/callback/conn"
+			c.Issuer = "https://evil.test"
+		}, "issuer must be https://accounts.google.com"},
+		{"local redirect permission doesn't cover remote http", google, func(c *Config) {
+			c.AllowLocalRedirect = true
+			c.RedirectURL = "http://auth.example/callback/conn"
+		}, "must use https"},
 		{"local permission doesn't cover remote http", okta, func(c *Config) {
 			c.AllowLocal = true
 			c.Issuer = "http://localhost.evil.test"
@@ -687,6 +700,13 @@ func TestConfigIsValidated(t *testing.T) {
 		if _, err := cfg.validated(); err != nil {
 			t.Errorf("%s: %v", suffix, err)
 		}
+	}
+
+	realWithLocalCallback := google
+	realWithLocalCallback.AllowLocalRedirect = true
+	realWithLocalCallback.RedirectURL = "http://localhost:8701/callback/conn"
+	if _, err := realWithLocalCallback.validated(); err != nil {
+		t.Fatalf("real provider with a local callback: %v", err)
 	}
 
 	localMock := okta

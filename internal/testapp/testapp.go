@@ -10,12 +10,19 @@ import (
 
 // Config says which app the page is.
 type Config struct {
-	AppID           string
-	Name            string
-	ProjectID       string
+	AppID     string
+	Name      string
+	ProjectID string
+	APIKey    string
+	// AuthDomain is needed for DirectGoogleSignIn.
+	AuthDomain string
+	// AuthEmulatorURL connects to an emulator. Leave it empty for a real project.
 	AuthEmulatorURL string
 	BrokerURL       string
 	RedirectURI     string
+	// DirectGoogleSignIn adds a button that signs in with Google through Firebase, skipping the broker.
+	// That creates the kind of account someone has from before the broker existed.
+	DirectGoogleSignIn bool
 }
 
 // Handler serves the page.
@@ -47,18 +54,19 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
   <button id="sign-in" hidden>Sign in</button>
   <button id="refresh" hidden>Refresh token</button>
   <button id="sign-out" hidden>Sign out</button>
+  {{if .DirectGoogleSignIn}}<button id="direct-google" hidden>Sign in directly with Google, skipping the broker</button>{{end}}
 </p>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js'
 import {
-	connectAuthEmulator, getAuth, getIdTokenResult, onIdTokenChanged, signInWithCustomToken, signOut,
+	connectAuthEmulator, getAuth, getIdTokenResult, GoogleAuthProvider, onIdTokenChanged, signInWithCustomToken, signInWithPopup, signOut,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js'
 
 const config = {{.}}
 const element = (id) => document.getElementById(id)
 
-const auth = getAuth(initializeApp({ apiKey: 'fake-api-key', projectId: config.ProjectID }))
-connectAuthEmulator(auth, config.AuthEmulatorURL, { disableWarnings: true })
+const auth = getAuth(initializeApp({ apiKey: config.APIKey, authDomain: config.AuthDomain, projectId: config.ProjectID }))
+if (config.AuthEmulatorURL) connectAuthEmulator(auth, config.AuthEmulatorURL, { disableWarnings: true })
 
 const base64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)))
 	.replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
@@ -116,6 +124,10 @@ async function finishSignIn() {
 }
 
 element('sign-in').onclick = startSignIn
+const directGoogle = element('direct-google')
+if (directGoogle) directGoogle.onclick = () => signInWithPopup(auth, new GoogleAuthProvider()).catch((err) => {
+	element('problem').textContent = 'Direct sign-in failed: ' + err.message
+})
 element('sign-out').onclick = () => signOut(auth)
 element('refresh').onclick = async () => {
 	await auth.currentUser.getIdToken(true)
@@ -125,6 +137,7 @@ element('refresh').onclick = async () => {
 
 async function show(user) {
 	element('sign-in').hidden = !!user
+	if (directGoogle) directGoogle.hidden = !!user
 	element('refresh').hidden = !user
 	element('sign-out').hidden = !user
 	if (!user) {
@@ -140,6 +153,7 @@ async function show(user) {
 		email: user.email,
 		tokenAudience: aud,
 		signInProvider: firebase?.sign_in_provider,
+		linkedProviders: user.providerData.map((provider) => provider.providerId + ': ' + provider.uid),
 		customClaims,
 		tokenIssuedAt: new Date(iat * 1000).toISOString(),
 		refreshes,

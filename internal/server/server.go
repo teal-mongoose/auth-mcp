@@ -8,8 +8,6 @@ import (
 	"net"
 	"net/http"
 	"time"
-
-	"github.com/teal-mongoose/auth-mcp/internal/safety"
 )
 
 const shutdownTimeout = 5 * time.Second
@@ -19,13 +17,13 @@ type Server struct {
 	listener net.Listener
 }
 
-// New runs the startup safety check, and starts listening only if it passes.
-func New(cfg safety.Config) (*Server, error) {
-	if err := safety.Check(cfg); err != nil {
+// New runs the startup check, and starts listening only if it passes.
+func New(bindAddr string, check func() error) (*Server, error) {
+	if err := check(); err != nil {
 		return nil, fmt.Errorf("refusing to start:\n%w", err)
 	}
 
-	listener, err := net.Listen("tcp", cfg.BindAddr)
+	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
 		return nil, err
 	}

@@ -19,8 +19,8 @@ const nav = document.getElementById('nav')
 const account = document.getElementById('account')
 const problem = document.getElementById('problem')
 
-const auth = getAuth(initializeApp({ apiKey: 'fake-api-key', projectId: config.ProjectID }))
-connectAuthEmulator(auth, config.AuthEmulatorURL, { disableWarnings: true })
+const auth = getAuth(initializeApp({ apiKey: config.APIKey, projectId: config.ProjectID }))
+if (config.AuthEmulatorURL) connectAuthEmulator(auth, config.AuthEmulatorURL, { disableWarnings: true })
 
 /** Builds an element. Strings become text, so they can't be read as HTML. */
 function el(tag, attributes = {}, ...children) {

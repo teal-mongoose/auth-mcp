@@ -2,22 +2,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/teal-mongoose/auth-mcp/internal/safety"
 )
-
-func config(bindAddr string) safety.Config {
-	return safety.Config{
-		AuthEmulatorHost:      "127.0.0.1:9399",
-		FirestoreEmulatorHost: "127.0.0.1:8280",
-		BindAddr:              bindAddr,
-		Projects:              []safety.Project{{ID: "demo-auth-mcp", AuthEmulatorHost: "127.0.0.1:9399"}},
-	}
-}
 
 func TestNewRefusesAndDoesNotListen(t *testing.T) {
 	// Pick a free port, so a listener appearing on it can only come from New.
@@ -30,10 +20,7 @@ func TestNewRefusesAndDoesNotListen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config(addr)
-	cfg.Projects = []safety.Project{{ID: "hvisit-staging", AuthEmulatorHost: "127.0.0.1:9399"}}
-
-	srv, err := New(cfg)
+	srv, err := New(addr, func() error { return errors.New("hvisit-staging isn't allowed") })
 	if err == nil {
 		t.Fatalf("New() started on %s, want a refusal", srv.Addr())
 	}
@@ -48,7 +35,7 @@ func TestNewRefusesAndDoesNotListen(t *testing.T) {
 }
 
 func TestServeAnswersHealthCheckThenShutsDown(t *testing.T) {
-	srv, err := New(config("127.0.0.1:0"))
+	srv, err := New("127.0.0.1:0", func() error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

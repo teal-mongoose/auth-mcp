@@ -110,6 +110,9 @@ type Config struct {
 	Now func() time.Time
 	// AllowLocalProviders accepts mock providers on this machine. See connector.Config.AllowLocal.
 	AllowLocalProviders bool
+	// AllowLocalRedirect accepts a callback on this machine, with real providers. See
+	// connector.Config.AllowLocalRedirect.
+	AllowLocalRedirect bool
 }
 
 // SecretEnvName is the environment variable holding a connection's client secret.
@@ -712,6 +715,8 @@ func (b *Broker) connectorFor(ctx context.Context, id string) (*connector.Connec
 		Domains:      org.Domains,
 		TenantID:     connection.TenantID,
 		AllowLocal:   b.config.AllowLocalProviders,
+
+		AllowLocalRedirect: b.config.AllowLocalRedirect,
 	})
 	if err != nil {
 		return nil, Connection{}, err

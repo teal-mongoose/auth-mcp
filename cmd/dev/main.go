@@ -23,6 +23,7 @@ import (
 	"github.com/teal-mongoose/auth-mcp/internal/devenv"
 	"github.com/teal-mongoose/auth-mcp/internal/fixtures"
 	"github.com/teal-mongoose/auth-mcp/internal/mockidp"
+	"github.com/teal-mongoose/auth-mcp/internal/safety"
 	"github.com/teal-mongoose/auth-mcp/internal/seed"
 	"github.com/teal-mongoose/auth-mcp/internal/server"
 	"github.com/teal-mongoose/auth-mcp/internal/testapp"
@@ -50,7 +51,7 @@ func run() error {
 
 	// Check before starting anything, and listen first, so a bad setup or a taken port fails fast.
 	cfg := devenv.SafetyConfig()
-	srv, err := server.New(cfg)
+	srv, err := server.New(devenv.BindAddr, func() error { return safety.Check(cfg) })
 	if err != nil {
 		return err
 	}
@@ -145,13 +146,22 @@ func startTestApps() ([]*http.Server, error) {
 			AppID:           app.ID,
 			Name:            app.Name,
 			ProjectID:       app.ProjectID,
+			APIKey:          "fake-api-key",
 			AuthEmulatorURL: "http://" + hosts[app.ProjectID],
 			BrokerURL:       devenv.BaseURL,
 			RedirectURI:     redirectURI,
 		}
 		handler := testapp.Handler(config)
 		if app.ID == fixtures.AppAdmin {
-			handler = adminscreen.Handler(adminscreen.Config(config))
+			handler = adminscreen.Handler(adminscreen.Config{
+				AppID:           app.ID,
+				Name:            app.Name,
+				ProjectID:       app.ProjectID,
+				APIKey:          "fake-api-key",
+				AuthEmulatorURL: "http://" + hosts[app.ProjectID],
+				BrokerURL:       devenv.BaseURL,
+				RedirectURI:     redirectURI,
+			})
 		}
 		testServer := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 		go func() { _ = testServer.Serve(listener) }()

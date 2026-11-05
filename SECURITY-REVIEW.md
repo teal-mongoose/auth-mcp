@@ -83,9 +83,9 @@ another connection's URL is refused before any exchange. **Every provider must r
 
 These are also listed in the plan.
 
-- **Production wiring separate from `devenv`.** `devenv` turns on emulator mode, in which signatures aren't
-  checked. A production server must not import it, and must refuse to start with either emulator variable
-  set. Add `devenv` to the list in `TestServerDoesNotLinkTestCode` at that point.
+- **An explicit list of allowed projects.** `cmd/auth-mcp` no longer imports `devenv`, a test keeps it that
+  way, and it refuses to start in emulator mode. But it only accepts projects named `auth-mcp-test-...`, which
+  must be replaced with an explicit list, and it only serves one project so far.
 - **Rate limits**, which must count tool calls as well as requests, because the SDK accepts JSON-RPC
   batches. Consider refusing batches.
 - **Binding cookie:** use a `__Host-` prefix and add HSTS.

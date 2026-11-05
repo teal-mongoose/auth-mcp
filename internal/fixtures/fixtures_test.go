@@ -14,6 +14,8 @@ func TestServerDoesNotLinkTestCode(t *testing.T) {
 	}
 
 	for _, forbidden := range []string{
+		"github.com/teal-mongoose/auth-mcp/internal/devenv",
+		"github.com/teal-mongoose/auth-mcp/internal/safety",
 		"github.com/teal-mongoose/auth-mcp/internal/adminscreen",
 		"github.com/teal-mongoose/auth-mcp/internal/fixtures",
 		"github.com/teal-mongoose/auth-mcp/internal/mockidp",

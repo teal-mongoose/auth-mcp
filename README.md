@@ -6,10 +6,15 @@ provider, and get back an ordinary Firebase login. Healthspaces admins manage it
 **Status: all seven phases are done, against mock providers only.** Sign-in works end to end for staff
 and several customers, and admins can inspect it through read-only MCP tools and a test admin screen.
 It's never run against a real provider. See [`SECURITY-REVIEW.md`](SECURITY-REVIEW.md) for what's verified
-and what isn't, and [`../mcp-auth-plan.md`](../mcp-auth-plan.md) for the plan.
+and what isn't, [`STEP-A.md`](STEP-A.md) for testing with real Google and Firebase, and
+[`../mcp-auth-plan.md`](../mcp-auth-plan.md) for the plan.
 
-Everything runs on this machine, with emulators, mock providers and generic test accounts. It can't
-reach a real Firebase project.
+There are two ways to run it:
+
+- **`cmd/dev`:** everything on this machine, with emulators, mock providers and generic test accounts. It
+  can't reach a real Firebase project. This is what the rest of this page describes.
+- **`cmd/auth-mcp`:** the real server, against a real throwaway project. See [`STEP-A.md`](STEP-A.md). It refuses
+  emulator mode, key files, and any project not named `auth-mcp-test-...`.
 
 ## Run it
 
@@ -153,11 +158,10 @@ go test -tags=emulator -count=1 -p 1 ./...
   `devenv.AuthClient` points each Admin SDK client at the right one.
 - **The server refuses to start outside this setup.** With `FIREBASE_AUTH_EMULATOR_HOST` set, the
   Admin SDK skips ID token signature checks, so anyone able to reach the server could forge an admin
-  token. See [`internal/safety/safety.go`](internal/safety/safety.go). `cmd/auth-mcp` only runs locally.
-  A production build needs its own wiring without `internal/devenv`, and must do the reverse, refusing
-  to start with that variable set.
+  token. See [`internal/safety/safety.go`](internal/safety/safety.go). The real server,
+  [`internal/live`](internal/live/live.go), does the reverse, and refuses to start with that variable set.
 - **Test code stays out of the server.** `TestServerDoesNotLinkTestCode` fails if `cmd/auth-mcp` ever
-  depends on the fixtures or mock providers.
+  depends on the emulator wiring, fixtures, mock providers or test pages.
 - **Mocks prove the logic, not the providers.** They only behave as they're built here, and the
   emulator doesn't check custom token signatures or expiry. Step A of the plan covers both.
 
