@@ -141,6 +141,36 @@ At `http://localhost:8711`, sign in with your `healthspaces.com` account through
 The `go test -tags=live` checks from Step A stay on the throwaway project: they create and delete accounts,
 which staging doesn't need.
 
+## Results, 2026-11-09
+
+Set up and deployed as the teal mongoose account. The project's only member is that account, as Owner, beside
+Google's own service accounts.
+
+**DNS isn't there yet,** so staging currently runs at Cloud Run's own address,
+`https://auth-mcp-26998740818.us-central1.run.app`, deployed with `AUTH_MCP_STAGING_ADDRESS=cloud-run`. The
+broker's Google client has that address's callback as a second redirect URI, and `.env.staging` points the test
+pages at it. When `auth-staging.healthspaces.io` resolves:
+
+1. Add the GoDaddy CNAME, and wait for the certificate.
+2. Redeploy with plain `deploy/deploy-staging.sh`.
+3. Set `AUTH_MCP_BASE_URL` in `.env.staging` back to `https://auth-staging.healthspaces.io`.
+4. Remove the `run.app` redirect URI from the broker's Google client.
+
+| Check | Result |
+| --- | --- |
+| Server starts on Cloud Run, as `auth-mcp-run`, against `auth-mcp-staging` | Passed |
+| `GET /authorize` with nothing | `400`, with HSTS, the CSP, `no-store`, `nosniff` and `DENY` |
+| `POST /mcp` with no token | `401` |
+| The test page's sign-in page, served from Cloud Run with the app read from Firestore | Passed |
+| Real Google sign-in through the broker, before the user existed in staging's Firebase | Refused, `not_linked`, as designed |
+| The same, after one direct Google sign-in created the user | Signed in, three times, each issuing one token |
+| The client secret from Secret Manager | Works: Google accepted the code exchange |
+
+**New users can't sign in through the broker yet.** It only recognizes someone through a link or an existing
+Google user in the app's project, and creates no accounts. Existing users of an app already on Google sign-in are
+fine. How new people get in, by creating accounts on first sign-in per connection, admins creating them, or
+invitations, is to be decided at Step B or C. See the plan.
+
 ## Not done yet
 
 - **No rate limits.** Anyone can reach `/authorize` and `/token`. At most 2 instances caps the cost, and
