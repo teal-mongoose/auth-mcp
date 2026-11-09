@@ -96,6 +96,17 @@ I can't enter passwords, so you do the Google sign-ins. Use `localhost`, not `12
 | 7 | `localhost:8713` | Sign out and in again, then open each section | Everything works. Sign-ins shows these steps, including the refusal in step 1 |
 | 8 | `localhost:8711` | Sign out, start signing in, then cancel at Google | Refused, with `provider_error` in Sign-ins, if Google returns to the broker |
 
+**Result, 2026-11-09:** steps 1-7 went as expected with `maxwell@healthspaces.com`, under an Internal audience:
+
+- Both broker sign-ins before there was an account were refused as `not_linked`.
+- Signing in directly with Google, then through the broker, gave the **same uid**, so an existing user keeps their
+  account. The broker's session had `org: healthspaces`, which survived a refresh.
+- The admin screen said "Not allowed" until `grant-admin` ran, then every section worked.
+- Step 8 couldn't be tried. An Internal app skips Google's consent screen, so there's nothing to cancel. The
+  automated tests cover that refusal.
+- The one hiccup was a placeholder left in `.env.live`'s auth domain, which made Google reject the direct sign-in
+  with `redirect_uri_mismatch`.
+
 If your audience is **External** rather than Internal, also try a personal Gmail listed as a test user. It
 should be refused with `wrong_domain`. With Internal, Google stops it first, so the broker's check isn't
 reached.

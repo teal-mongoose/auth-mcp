@@ -157,9 +157,14 @@ so they won't rerun automatically.
 - `list_users` with an unknown page token lists from wherever it would sort, rather than failing. That's harmless
   for a read-only admin tool.
 
+A person then signed in with real Google, as recorded in `STEP-A.md`, section 3. The pinned issuer and
+endpoints worked, the `hd` check accepted their Workspace, and an account made by signing in to Firebase
+directly with Google was matched by its `google.com` identity.
+
 ## What still can't be known
 
-- How Google behaves in a real sign-in, which needs a person: see `STEP-A.md`, section 3.
+- How Google refuses a personal account. The OAuth client was Internal, so Google stopped such sign-ins before
+  the broker's `hd` check.
 - How Microsoft and Okta behave, including what Firebase stores as the `microsoft.com` uid. That decides
   whether Microsoft users can ever be matched automatically.
 - The final step of the mix-up attack at a real provider. The fix doesn't depend on that, because the code
