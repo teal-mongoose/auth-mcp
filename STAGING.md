@@ -4,7 +4,8 @@ This puts the broker on the internet at `https://auth-staging.healthspaces.io`, 
 `auth-mcp-staging`, owned by the teal mongoose Google account rather than the healthspaces.com organization,
 with Google as its only provider. It's the broker alone: no app uses it yet, and nothing
 in hVisit or `core` changes. The test page still runs on this PC, at `http://localhost:8711`, and signs in
-through the deployed broker. Okta and Microsoft come after this.
+through the deployed broker. Okta, Microsoft and other providers come last, once Google sign-in is fleshed
+out.
 
 **Safety:** the server, `cmd/auth-setup` and `cmd/testpages` accept only `auth-mcp-test-...` projects and
 `auth-mcp-staging`, so they can't touch any other project. There's still no service account key: on Cloud
@@ -178,4 +179,4 @@ invitations, is to be decided at Step B or C. See the plan.
   any real app uses it.
 - **No monitoring or alerts,** and sign-in events have no retention period.
 - **No admins,** and no admin screen. `cmd/auth-setup grant-admin` can make one when needed.
-- **Okta and Microsoft,** next.
+- **Okta, Microsoft and other providers,** last, once Google sign-in is fleshed out.
