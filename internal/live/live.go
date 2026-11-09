@@ -211,7 +211,7 @@ func NewHandler(ctx context.Context, cfg Config) (http.Handler, func(), error) {
 		AdminOrg:       OrgStaff,
 		AllowedOrigins: cfg.AdminOrigins,
 	}).Handler())
-	return mux, closeClients, nil
+	return withRateLimits(mux, !IsLocalBaseURL(cfg.BaseURL)), closeClients, nil
 }
 
 // Setup describes what cmd/auth-setup saves to the project.

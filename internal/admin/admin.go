@@ -8,8 +8,10 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -84,7 +86,34 @@ func (s *Server) Handler() http.Handler {
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxRequestBytes},
 	)
 	authenticated := mcpauth.RequireBearerToken(s.verify, &mcpauth.RequireBearerTokenOptions{Scopes: []string{adminScope}})(streamable)
-	return s.originCheck(authenticated)
+	return s.originCheck(refuseBatches(authenticated))
+}
+
+// refuseBatches turns away JSON-RPC batches. The SDK still accepts them from clients claiming an older
+// protocol version, and one request could then run any number of tools, getting around rate limits.
+func refuseBatches(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Body == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+		var tooLarge *http.MaxBytesError
+		switch {
+		case errors.As(err, &tooLarge):
+			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+			return
+		case err != nil:
+			http.Error(w, "couldn't read the request", http.StatusBadRequest)
+			return
+		}
+		if trimmed := bytes.TrimLeft(body, " \t\r\n"); len(trimmed) > 0 && trimmed[0] == '[' {
+			http.Error(w, "JSON-RPC batches aren't supported", http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		next.ServeHTTP(w, r)
+	})
 }
 
 // originCheck turns away web pages that aren't on the allowlist, before anything else happens. Requests

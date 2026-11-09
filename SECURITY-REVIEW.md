@@ -86,8 +86,12 @@ These are also listed in the plan.
 - **An explicit list of allowed projects.** `cmd/auth-mcp` no longer imports `devenv`, a test keeps it that
   way, and it refuses to start in emulator mode. It accepts `auth-mcp-test-...` projects and, by exact name,
   `auth-mcp-staging`. Each real app's project must be added by name, and it only serves one project so far.
-- **Rate limits**, which must count tool calls as well as requests, because the SDK accepts JSON-RPC
-  batches. Consider refusing batches.
+- ~~**Rate limits**, which must count tool calls as well as requests, because the SDK accepts JSON-RPC
+  batches. Consider refusing batches.~~ Done: per-client limits on each endpoint, a shared cap on sign-in
+  writes, and `/mcp` refuses batches. In memory, per instance, so each instance allows the limit again.
+  An independent review found ways for a few clients to block everyone; those were fixed and each fix has
+  a test shown to fail without it. Still open: anyone behind an admin's address (an office NAT) can use
+  up that admin's `/mcp` allowance, because it's counted before the token is checked.
 - ~~**Binding cookie:** use a `__Host-` prefix and add HSTS.~~ Done for staging: over https the cookie is
   `__Host-` prefixed, `Secure` and on `/`, and responses carry `Strict-Transport-Security`.
 - **A `recover` around tool handlers.** A panic in one would stop the whole process.

@@ -32,6 +32,10 @@ Differences from running on this PC:
 - No browser origin may call the admin MCP tools, because there's no admin screen yet. Set
   `AUTH_MCP_ADMIN_ORIGINS` (comma-separated) in the deploy script when there is one.
 - Abandoned sign-ins and codes are deleted by a Firestore TTL policy.
+- Requests are rate limited (`internal/live/limits.go`), per client and instance. Clients are told apart by
+  the last `X-Forwarded-For` entry, which Cloud Run's front end adds. **That assumes nothing else is in
+  front:** put a load balancer in front and every client would share one limit, so the client key must
+  change with it.
 
 ## 1. What you set up
 
@@ -174,9 +178,6 @@ invitations, is to be decided at Step B or C. See the plan.
 
 ## Not done yet
 
-- **No rate limits.** Anyone can reach `/authorize` and `/token`. At most 2 instances caps the cost, and
-  codes only ever go to registered return addresses, which today are on this PC. Rate limits come before
-  any real app uses it.
 - **No monitoring or alerts,** and sign-in events have no retention period.
 - **No admins,** and no admin screen. `cmd/auth-setup grant-admin` can make one when needed.
 - **Okta, Microsoft and other providers,** last, once Google sign-in is fleshed out.
