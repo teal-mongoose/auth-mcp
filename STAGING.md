@@ -170,6 +170,10 @@ pages at it. When `auth-staging.healthspaces.io` resolves:
 | Real Google sign-in through the broker, before the user existed in staging's Firebase | Refused, `not_linked`, as designed |
 | The same, after one direct Google sign-in created the user | Signed in, three times, each issuing one token |
 | The client secret from Secret Manager | Works: Google accepted the code exchange |
+| Rate limits (1ac2c77): 25 POSTs with faked `X-Forwarded-For` entries | One bucket: 10 allowed, then `429`. The limiter's key matched Google's own record of the client address |
+| A `429` | `Retry-After`, `no-store`, and CORS headers so the calling page can read it |
+| `/mcp` with a JSON-RPC batch | `400` |
+| Real sign-in through the broker, with rate limits on | Signed in |
 
 **New users can't sign in through the broker yet.** It only recognizes someone through a link or an existing
 Google user in the app's project, and creates no accounts. Existing users of an app already on Google sign-in are
