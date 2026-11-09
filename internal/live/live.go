@@ -43,9 +43,9 @@ const (
 	AdminOrigin   = "http://localhost:8713"
 )
 
-// allowedProjects are throwaway test projects and the staging project. The suffix allows for the staging
-// project needing one, if its plain name is taken across Google Cloud.
-var allowedProjects = regexp.MustCompile(`^(auth-mcp-test-[a-z0-9-]+|auth-mcp-staging(-[a-z0-9]+)?)$`)
+// allowedProjects are throwaway test projects and, by its exact name, the staging project. It's owned by the
+// teal mongoose Google account, outside the healthspaces.com organization.
+var allowedProjects = regexp.MustCompile(`^(auth-mcp-test-[a-z0-9-]+|auth-mcp-staging-tm)$`)
 
 // Config says how to run against a real project.
 type Config struct {
@@ -129,7 +129,7 @@ func Check(c Config) error {
 	}
 
 	if !allowedProjects.MatchString(c.ProjectID) {
-		errs = append(errs, fmt.Errorf("AUTH_MCP_PROJECT_ID %q must be a throwaway auth-mcp-test-something project, or auth-mcp-staging", c.ProjectID))
+		errs = append(errs, fmt.Errorf("AUTH_MCP_PROJECT_ID %q must be a throwaway auth-mcp-test-something project, or auth-mcp-staging-tm", c.ProjectID))
 	}
 	if c.ServiceAccount == "" {
 		errs = append(errs, errors.New("AUTH_MCP_SERVICE_ACCOUNT must be set"))

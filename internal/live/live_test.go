@@ -29,7 +29,7 @@ func TestCheckAccepts(t *testing.T) {
 	if err := Check(deployed); err != nil {
 		t.Errorf("https: %v", err)
 	}
-	for _, project := range []string{"auth-mcp-staging", "auth-mcp-staging-hs1"} {
+	for _, project := range []string{"auth-mcp-staging-tm"} {
 		staging := deployed
 		staging.ProjectID = project
 		staging.ServiceAccount = "auth-mcp-run@" + project + ".iam.gserviceaccount.com"
@@ -57,7 +57,9 @@ func TestCheckRefuses(t *testing.T) {
 		{"staging with a trailing hyphen", func(c *Config) { c.ProjectID = "auth-mcp-staging-" }, "throwaway"},
 		{"staging as a prefix", func(c *Config) { c.ProjectID = "auth-mcp-stagingx" }, "throwaway"},
 		{"staging inside another name", func(c *Config) { c.ProjectID = "x-auth-mcp-staging" }, "throwaway"},
-		{"staging with a longer suffix", func(c *Config) { c.ProjectID = "auth-mcp-staging-a-b" }, "throwaway"},
+		{"staging with a longer suffix", func(c *Config) { c.ProjectID = "auth-mcp-staging-tm-2" }, "throwaway"},
+		{"staging with another suffix", func(c *Config) { c.ProjectID = "auth-mcp-staging-hs" }, "throwaway"},
+		{"the abandoned healthspaces.com staging project", func(c *Config) { c.ProjectID = "auth-mcp-staging" }, "throwaway"},
 		{"no service account", func(c *Config) { c.ServiceAccount = "" }, "AUTH_MCP_SERVICE_ACCOUNT must be set"},
 		{"another project's service account", func(c *Config) {
 			c.ServiceAccount = "firebase-adminsdk-abc@hvisit-staging.iam.gserviceaccount.com"

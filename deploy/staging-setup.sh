@@ -1,14 +1,13 @@
 #!/bin/bash
 # One-time setup of the staging project for deploys (STAGING.md). Safe to run again: it creates only
 # what's missing and re-applies the same roles. Needs `gcloud auth login` as an owner of the project, and
-# Firestore already created. It never sees the client secret: that's added by hand in the console.
+# Firestore already created. It never sees the client secret: that's added by hand in the console, before or
+# after this runs.
 #
 #   deploy/staging-setup.sh
-#
-# Set AUTH_MCP_STAGING_PROJECT if the project's id isn't auth-mcp-staging.
 set -euo pipefail
 
-PROJECT=${AUTH_MCP_STAGING_PROJECT:-auth-mcp-staging}
+PROJECT=auth-mcp-staging-tm
 REGION=us-central1
 REPO=auth-mcp
 RUN_SA=auth-mcp-run@$PROJECT.iam.gserviceaccount.com

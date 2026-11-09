@@ -7,11 +7,9 @@
 #
 # What's built is the repo as committed (git archive of HEAD), so uncommitted changes and git-ignored files
 # such as .env.live and .env.staging never leave this PC. The image is tagged with the commit.
-#
-# Set AUTH_MCP_STAGING_PROJECT if the project's id isn't auth-mcp-staging.
 set -euo pipefail
 
-PROJECT=${AUTH_MCP_STAGING_PROJECT:-auth-mcp-staging}
+PROJECT=auth-mcp-staging-tm
 REGION=us-central1
 SERVICE=auth-mcp
 RUN_SA=auth-mcp-run@$PROJECT.iam.gserviceaccount.com

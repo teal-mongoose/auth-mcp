@@ -1,12 +1,13 @@
 # Staging: the broker on Cloud Run, with Google sign-in
 
 This puts the broker on the internet at `https://auth-staging.healthspaces.io`, in its own project,
-`auth-mcp-staging`, with Google as its only provider. It's the broker alone: no app uses it yet, and nothing
+`auth-mcp-staging-tm`, owned by the teal mongoose Google account rather than the healthspaces.com organization,
+with Google as its only provider. It's the broker alone: no app uses it yet, and nothing
 in hVisit or `core` changes. The test page still runs on this PC, at `http://localhost:8711`, and signs in
 through the deployed broker. Okta and Microsoft come after this.
 
 **Safety:** the server, `cmd/auth-setup` and `cmd/testpages` accept only `auth-mcp-test-...` projects and
-`auth-mcp-staging`, so they can't touch any other project. There's still no service account key: on Cloud
+`auth-mcp-staging-tm`, so they can't touch any other project. There's still no service account key: on Cloud
 Run, the server signs as its own service account, `auth-mcp-run`, through Google's IAM API. The client
 secret lives only in Secret Manager. Deploys build what's committed, so `.env.live`, `.env.staging` and
 uncommitted changes never leave this PC.
@@ -17,10 +18,10 @@ uncommitted changes never leave this PC.
 | --- | --- |
 | Server | Cloud Run service `auth-mcp`, `us-central1`, 0 to 2 instances |
 | Address | `https://auth-staging.healthspaces.io`, a Cloud Run domain mapping |
-| Runs as | `auth-mcp-run@auth-mcp-staging.iam.gserviceaccount.com` |
+| Runs as | `auth-mcp-run@auth-mcp-staging-tm.iam.gserviceaccount.com` |
 | Its roles | Firestore user, Firebase Auth admin, and signing as itself, in this project only |
 | Client secret | Secret Manager, `google-client-secret`, readable by `auth-mcp-run` only |
-| Images | Artifact Registry, `us-central1-docker.pkg.dev/auth-mcp-staging/auth-mcp/server:<commit>` |
+| Images | Artifact Registry, `us-central1-docker.pkg.dev/auth-mcp-staging-tm/auth-mcp/server:<commit>` |
 | Settings | The org, connection and test apps in Firestore, saved by `cmd/auth-setup` from this PC |
 
 Differences from running on this PC:
@@ -33,27 +34,42 @@ Differences from running on this PC:
 
 ## 1. What you set up
 
-1. **Create the project** in the [Google Cloud console](https://console.cloud.google.com/projectcreate),
-   under the `healthspaces.com` organization, with the id `auth-mcp-staging`, and link billing. Cloud Run and
-   Cloud Build need it. If the id is taken, use `auth-mcp-staging-` plus a short suffix, and tell me.
-2. **Add Firebase to it** in the [Firebase console](https://console.firebase.google.com): Add project, then
-   pick the existing `auth-mcp-staging`. Google Analytics isn't needed. Then:
+Do all of this signed in to the console as the teal mongoose account, which owns the project. It's a single
+Google account with no organization, which changes two things: the sign-in client can't be **Internal**, so the
+broker's own domain check is what keeps sign-in to `healthspaces.com`; and this PC's `gcloud`, signed in as
+`software@healthspaces.com`, needs to be made an Owner.
+
+1. **Create the project** at the [Google Cloud console](https://console.cloud.google.com/projectcreate), with
+   the id `auth-mcp-staging-tm` exactly (click Edit under the name to set it). Location is "No organization". Link a
+   billing account owned by teal mongoose: Cloud Run and Cloud Build need it. If the id is taken, tell me the one
+   you get, because the server only accepts this exact name.
+2. **Make `software@healthspaces.com` an Owner:** IAM & Admin > IAM > Grant access, role **Owner**. Google
+   emails it an invitation, which must be accepted from that inbox before it takes effect. That account is
+   already a verified owner of `healthspaces.io`, which the address mapping needs.
+3. **Add Firebase to it** in the [Firebase console](https://console.firebase.google.com): Create a project, then
+   near the bottom, **Add Firebase to a Google Cloud project**, and pick `auth-mcp-staging-tm`. Google Analytics
+   isn't needed. Then:
    - **Authentication:** click Get started, then enable **Google** under Sign-in method. Under Settings >
      Authorized domains, make sure `localhost` is listed, for the test page.
    - **Firestore Database:** create it in **production mode**, which denies all browser access. Use
      `us-central1` (or `nam5`).
    - **Project settings > Your apps:** add a **Web** app. Hosting isn't needed. Note its `apiKey`.
-3. **Create the Google OAuth client** in the Google Cloud console, with `auth-mcp-staging` selected, under
-   Google Auth Platform:
-   - **Audience:** **Internal**, which limits sign-in to the Workspace.
-   - **Branding:** an app name such as "HealthSpaces sign-in (staging)" and your support email.
+4. **Create the Google OAuth client** at
+   [Google Auth Platform](https://console.cloud.google.com/auth/overview?project=auth-mcp-staging-tm):
+   - **Get started:** an app name such as "HealthSpaces sign-in (staging)", the teal mongoose account as the
+     support email, Audience **External**, and a contact email.
+   - **Audience:** leave it in **Testing**, and add `maxwell@healthspaces.com` as a test user. Only test users
+     get past Google then, as a second gate. Adding a personal Gmail account too lets us check that the broker
+     refuses it, which Step A couldn't.
    - **Clients > Create client:** type **Web application**, with this authorized redirect URI, exactly:
      `https://auth-staging.healthspaces.io/callback/staff-google`
-4. **Fill in `.env.staging`.** Copy `.env.staging.example` to `.env.staging`, in this folder, and add the
-   client ID and the `apiKey`. Git ignores it. The client secret doesn't go in it.
-5. **Sign gcloud in** as a project owner, if it isn't already: `gcloud auth login`.
+5. **Store the client secret straight away.** Google shows it only once, when the client is created. In
+   Security > Secret Manager (enable the API if asked), Create secret, named exactly `google-client-secret`, with
+   the secret as its value and the other settings left as they are. Please don't paste it into chat.
+6. **Fill in `.env.staging`.** Copy `.env.staging.example` to `.env.staging`, in this folder, and add the
+   client ID and the `apiKey`. Git ignores it.
 
-Then tell me it's done, and the project id if it differs. Please don't paste the client secret into chat.
+Then tell me it's done.
 
 ## 2. What I run, and the steps between
 
@@ -63,33 +79,30 @@ Then tell me it's done, and the project id if it differs. Please don't paste the
    deploy/staging-setup.sh
    ```
 
-   It turns on the APIs, creates `auth-mcp-run` and its roles, the image repository, the TTL policies and an
-   empty secret, and grants Cloud Build what it needs. It's safe to run again.
+   It turns on the APIs, creates `auth-mcp-run` and its roles, the image repository and the TTL policies,
+   gives `auth-mcp-run` access to your secret, and grants Cloud Build what it needs. It's safe to run again.
 
-2. **You add the client secret** as the first version of `google-client-secret`, at the link the script
-   prints: Secret Manager > `google-client-secret` > New version, and paste the secret there.
-
-3. **I save the settings to Firestore,** from this PC:
+2. **I save the settings to Firestore,** from this PC:
 
    ```bash
    go run ./cmd/auth-setup -env-file .env.staging save
    ```
 
-4. **I deploy:**
+3. **I deploy:**
 
    ```bash
    deploy/deploy-staging.sh
    ```
 
-5. **I map the address:**
+4. **I map the address:**
 
    ```bash
-   gcloud beta run domain-mappings create --service auth-mcp --domain auth-staging.healthspaces.io --region us-central1 --project auth-mcp-staging
+   gcloud beta run domain-mappings create --service auth-mcp --domain auth-staging.healthspaces.io --region us-central1 --project auth-mcp-staging-tm
    ```
 
-   This needs `healthspaces.io` verified for your Google account, which it is for hVisit's addresses.
+   This runs as `software@healthspaces.com`, which is a verified owner of `healthspaces.io`.
 
-6. **You add the DNS record at GoDaddy,** for `healthspaces.io`: type **CNAME**, name `auth-staging`, value
+5. **You add the DNS record at GoDaddy,** for `healthspaces.io`: type **CNAME**, name `auth-staging`, value
    `ghs.googlehosted.com.` Google then issues a certificate, which can take 15 minutes to an hour.
 
 ## 3. Checking it

@@ -85,7 +85,7 @@ These are also listed in the plan.
 
 - **An explicit list of allowed projects.** `cmd/auth-mcp` no longer imports `devenv`, a test keeps it that
   way, and it refuses to start in emulator mode. It accepts `auth-mcp-test-...` projects and, by exact name,
-  `auth-mcp-staging`. Each real app's project must be added by name, and it only serves one project so far.
+  `auth-mcp-staging-tm`. Each real app's project must be added by name, and it only serves one project so far.
 - **Rate limits**, which must count tool calls as well as requests, because the SDK accepts JSON-RPC
   batches. Consider refusing batches.
 - ~~**Binding cookie:** use a `__Host-` prefix and add HSTS.~~ Done for staging: over https the cookie is
