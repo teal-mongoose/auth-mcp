@@ -19,6 +19,18 @@ REGION=us-central1
 SERVICE=auth-mcp
 RUN_SA=auth-mcp-run@$PROJECT.iam.gserviceaccount.com
 BASE_URL=https://auth-staging.healthspaces.io
+# Until the address's DNS exists, the broker can be tested at Cloud Run's own address instead:
+#   AUTH_MCP_STAGING_ADDRESS=cloud-run deploy/deploy-staging.sh
+# Google's client then also needs $CLOUD_RUN_URL/callback/staff-google as a redirect URI.
+CLOUD_RUN_URL=https://auth-mcp-26998740818.us-central1.run.app
+case "${AUTH_MCP_STAGING_ADDRESS:-}" in
+"") ;;
+cloud-run) BASE_URL=$CLOUD_RUN_URL ;;
+*)
+	echo "AUTH_MCP_STAGING_ADDRESS must be unset or cloud-run" >&2
+	exit 2
+	;;
+esac
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 # Windows paths for gcloud, which isn't a Git Bash program
