@@ -1,8 +1,8 @@
 // Package live wires the server to a real Firebase project, as opposed to the local emulators.
 //
-// It refuses to run in emulator mode, where the Admin SDK doesn't check token signatures. For now it also
-// refuses any project not named auth-mcp-test-..., because this machine's default credentials can reach
-// real projects. That rule has to be replaced by an explicit list of projects before real use.
+// It refuses to run in emulator mode, where the Admin SDK doesn't check token signatures. It also refuses
+// any project but throwaway auth-mcp-test-... ones and the staging project, because this machine's default
+// credentials can reach real projects. Serving a real app's project will need its own explicit entry.
 package live
 
 import (
@@ -43,7 +43,9 @@ const (
 	AdminOrigin   = "http://localhost:8713"
 )
 
-var testProjectPattern = regexp.MustCompile(`^auth-mcp-test-[a-z0-9-]+$`)
+// allowedProjects are throwaway test projects and the staging project. The suffix allows for the staging
+// project needing one, if its plain name is taken across Google Cloud.
+var allowedProjects = regexp.MustCompile(`^(auth-mcp-test-[a-z0-9-]+|auth-mcp-staging(-[a-z0-9]+)?)$`)
 
 // Config says how to run against a real project.
 type Config struct {
@@ -67,12 +69,42 @@ func FromEnv() Config {
 		ProjectID:             os.Getenv("AUTH_MCP_PROJECT_ID"),
 		ServiceAccount:        os.Getenv("AUTH_MCP_SERVICE_ACCOUNT"),
 		BaseURL:               envOr("AUTH_MCP_BASE_URL", defaultBaseURL),
-		BindAddr:              envOr("AUTH_MCP_BIND_ADDR", defaultBindAddr),
-		AdminOrigins:          []string{AdminOrigin},
+		BindAddr:              bindAddrFromEnv(),
+		AdminOrigins:          adminOriginsFromEnv(),
 		AuthEmulatorHost:      os.Getenv("FIREBASE_AUTH_EMULATOR_HOST"),
 		FirestoreEmulatorHost: os.Getenv("FIRESTORE_EMULATOR_HOST"),
 		CredentialsFile:       os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
 	}
+}
+
+// bindAddrFromEnv uses AUTH_MCP_BIND_ADDR if set, then Cloud Run's PORT, then this machine's default.
+func bindAddrFromEnv() string {
+	if addr := os.Getenv("AUTH_MCP_BIND_ADDR"); addr != "" {
+		return addr
+	}
+	if port := os.Getenv("PORT"); port != "" {
+		return ":" + port
+	}
+	return defaultBindAddr
+}
+
+// adminOriginsFromEnv reads AUTH_MCP_ADMIN_ORIGINS, separated by commas. When it's unset, the local admin
+// screen is allowed only if the broker itself is local.
+func adminOriginsFromEnv() []string {
+	value, set := os.LookupEnv("AUTH_MCP_ADMIN_ORIGINS")
+	if !set {
+		if IsLocalBaseURL(envOr("AUTH_MCP_BASE_URL", defaultBaseURL)) {
+			return []string{AdminOrigin}
+		}
+		return nil
+	}
+	var origins []string
+	for _, origin := range strings.Split(value, ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
 }
 
 func envOr(name, fallback string) string {
@@ -96,8 +128,8 @@ func Check(c Config) error {
 		errs = append(errs, errors.New("GOOGLE_APPLICATION_CREDENTIALS must not be set: this setup uses no key file"))
 	}
 
-	if !testProjectPattern.MatchString(c.ProjectID) {
-		errs = append(errs, fmt.Errorf("AUTH_MCP_PROJECT_ID %q must be a throwaway project, named auth-mcp-test-something", c.ProjectID))
+	if !allowedProjects.MatchString(c.ProjectID) {
+		errs = append(errs, fmt.Errorf("AUTH_MCP_PROJECT_ID %q must be a throwaway auth-mcp-test-something project, or auth-mcp-staging", c.ProjectID))
 	}
 	if c.ServiceAccount == "" {
 		errs = append(errs, errors.New("AUTH_MCP_SERVICE_ACCOUNT must be set"))
@@ -239,6 +271,10 @@ func (s Setup) Save(ctx context.Context, cfg Config, store *broker.Store) error 
 // LoadEnvFile sets variables from a file of KEY=VALUE lines, without replacing any already set. Errors
 // never quote a line, because the file holds secrets.
 func LoadEnvFile(path string) error {
+	// An empty path means the settings are already in the environment, as on Cloud Run.
+	if path == "" {
+		return nil
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return err

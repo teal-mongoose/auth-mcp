@@ -84,11 +84,12 @@ another connection's URL is refused before any exchange. **Every provider must r
 These are also listed in the plan.
 
 - **An explicit list of allowed projects.** `cmd/auth-mcp` no longer imports `devenv`, a test keeps it that
-  way, and it refuses to start in emulator mode. But it only accepts projects named `auth-mcp-test-...`, which
-  must be replaced with an explicit list, and it only serves one project so far.
+  way, and it refuses to start in emulator mode. It accepts `auth-mcp-test-...` projects and, by exact name,
+  `auth-mcp-staging`. Each real app's project must be added by name, and it only serves one project so far.
 - **Rate limits**, which must count tool calls as well as requests, because the SDK accepts JSON-RPC
   batches. Consider refusing batches.
-- **Binding cookie:** use a `__Host-` prefix and add HSTS.
+- ~~**Binding cookie:** use a `__Host-` prefix and add HSTS.~~ Done for staging: over https the cookie is
+  `__Host-` prefixed, `Secure` and on `/`, and responses carry `Strict-Transport-Security`.
 - **A `recover` around tool handlers.** A panic in one would stop the whole process.
 - **Paging and filters for sign-in events.** Anyone can currently push real events out of view by sending
   junk requests. Consider leaving such noise out of the event list.

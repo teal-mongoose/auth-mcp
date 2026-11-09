@@ -14,7 +14,8 @@ There are two ways to run it:
 - **`cmd/dev`:** everything on this machine, with emulators, mock providers and generic test accounts. It
   can't reach a real Firebase project. This is what the rest of this page describes.
 - **`cmd/auth-mcp`:** the real server, against a real throwaway project. See [`STEP-A.md`](STEP-A.md). It refuses
-  emulator mode, key files, and any project not named `auth-mcp-test-...`.
+  emulator mode, key files, and any project but `auth-mcp-test-...` ones and `auth-mcp-staging`. The same
+  server runs on Cloud Run in staging: see [`STAGING.md`](STAGING.md).
 
 ## Run it
 

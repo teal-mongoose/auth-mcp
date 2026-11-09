@@ -29,6 +29,14 @@ func TestCheckAccepts(t *testing.T) {
 	if err := Check(deployed); err != nil {
 		t.Errorf("https: %v", err)
 	}
+	for _, project := range []string{"auth-mcp-staging", "auth-mcp-staging-hs1"} {
+		staging := deployed
+		staging.ProjectID = project
+		staging.ServiceAccount = "auth-mcp-run@" + project + ".iam.gserviceaccount.com"
+		if err := Check(staging); err != nil {
+			t.Errorf("%s: %v", project, err)
+		}
+	}
 }
 
 func TestCheckRefuses(t *testing.T) {
@@ -40,12 +48,16 @@ func TestCheckRefuses(t *testing.T) {
 		{"auth emulator mode", func(c *Config) { c.AuthEmulatorHost = "127.0.0.1:9399" }, "FIREBASE_AUTH_EMULATOR_HOST must not be set"},
 		{"firestore emulator mode", func(c *Config) { c.FirestoreEmulatorHost = "127.0.0.1:8280" }, "FIRESTORE_EMULATOR_HOST must not be set"},
 		{"key file", func(c *Config) { c.CredentialsFile = "key.json" }, "GOOGLE_APPLICATION_CREDENTIALS must not be set"},
-		{"no project", func(c *Config) { c.ProjectID = "" }, "throwaway project"},
-		{"a real project", func(c *Config) { c.ProjectID = "hvisit-staging" }, "throwaway project"},
-		{"a production project", func(c *Config) { c.ProjectID = "hpoo-prod" }, "throwaway project"},
-		{"name containing the prefix", func(c *Config) { c.ProjectID = "x-auth-mcp-test-1" }, "throwaway project"},
-		{"prefix alone", func(c *Config) { c.ProjectID = "auth-mcp-test-" }, "throwaway project"},
-		{"emulator project", func(c *Config) { c.ProjectID = "demo-auth-mcp" }, "throwaway project"},
+		{"no project", func(c *Config) { c.ProjectID = "" }, "throwaway"},
+		{"a real project", func(c *Config) { c.ProjectID = "hvisit-staging" }, "throwaway"},
+		{"a production project", func(c *Config) { c.ProjectID = "hpoo-prod" }, "throwaway"},
+		{"name containing the prefix", func(c *Config) { c.ProjectID = "x-auth-mcp-test-1" }, "throwaway"},
+		{"prefix alone", func(c *Config) { c.ProjectID = "auth-mcp-test-" }, "throwaway"},
+		{"emulator project", func(c *Config) { c.ProjectID = "demo-auth-mcp" }, "throwaway"},
+		{"staging with a trailing hyphen", func(c *Config) { c.ProjectID = "auth-mcp-staging-" }, "throwaway"},
+		{"staging as a prefix", func(c *Config) { c.ProjectID = "auth-mcp-stagingx" }, "throwaway"},
+		{"staging inside another name", func(c *Config) { c.ProjectID = "x-auth-mcp-staging" }, "throwaway"},
+		{"staging with a longer suffix", func(c *Config) { c.ProjectID = "auth-mcp-staging-a-b" }, "throwaway"},
 		{"no service account", func(c *Config) { c.ServiceAccount = "" }, "AUTH_MCP_SERVICE_ACCOUNT must be set"},
 		{"another project's service account", func(c *Config) {
 			c.ServiceAccount = "firebase-adminsdk-abc@hvisit-staging.iam.gserviceaccount.com"
@@ -98,6 +110,53 @@ func TestFromEnv(t *testing.T) {
 	t.Setenv("FIREBASE_AUTH_EMULATOR_HOST", "127.0.0.1:9399")
 	if err := Check(FromEnv()); err == nil {
 		t.Fatal("Check(FromEnv()) = nil in emulator mode")
+	}
+}
+
+func TestBindAddrFromEnv(t *testing.T) {
+	t.Setenv("AUTH_MCP_BIND_ADDR", "")
+	t.Setenv("PORT", "")
+	if got := bindAddrFromEnv(); got != defaultBindAddr {
+		t.Errorf("default = %q", got)
+	}
+	t.Setenv("PORT", "8080")
+	if got := bindAddrFromEnv(); got != ":8080" {
+		t.Errorf("with PORT = %q", got)
+	}
+	t.Setenv("AUTH_MCP_BIND_ADDR", "127.0.0.1:9000")
+	if got := bindAddrFromEnv(); got != "127.0.0.1:9000" {
+		t.Errorf("with AUTH_MCP_BIND_ADDR = %q", got)
+	}
+}
+
+func TestAdminOriginsFromEnv(t *testing.T) {
+	unset := func(t *testing.T, name string) {
+		t.Helper()
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	unset(t, "AUTH_MCP_ADMIN_ORIGINS")
+	unset(t, "AUTH_MCP_BASE_URL")
+	if got := adminOriginsFromEnv(); len(got) != 1 || got[0] != AdminOrigin {
+		t.Errorf("local default = %v", got)
+	}
+
+	t.Setenv("AUTH_MCP_BASE_URL", "https://auth-staging.example")
+	if got := adminOriginsFromEnv(); len(got) != 0 {
+		t.Errorf("deployed default = %v, want none", got)
+	}
+
+	t.Setenv("AUTH_MCP_ADMIN_ORIGINS", " https://admin.example , ,https://other.example")
+	if got := adminOriginsFromEnv(); len(got) != 2 || got[0] != "https://admin.example" {
+		t.Errorf("listed = %v", got)
+	}
+
+	t.Setenv("AUTH_MCP_ADMIN_ORIGINS", "")
+	if got := adminOriginsFromEnv(); len(got) != 0 {
+		t.Errorf("set but empty = %v, want none", got)
 	}
 }
 
@@ -180,6 +239,12 @@ func TestLoadEnvFileErrorsDoNotQuoteTheFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "line 2") {
 		t.Errorf("the error doesn't say where: %v", err)
+	}
+}
+
+func TestLoadEnvFileWithNoPath(t *testing.T) {
+	if err := LoadEnvFile(""); err != nil {
+		t.Fatalf("LoadEnvFile(\"\") = %v", err)
 	}
 }
 

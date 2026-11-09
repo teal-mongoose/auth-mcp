@@ -162,17 +162,26 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("POST /authorize", b.route)
 	mux.HandleFunc("GET /callback/{connection}", b.callback)
 	mux.HandleFunc("POST /token", b.token)
-	return securityHeaders(mux)
+	return securityHeaders(mux, b.secure())
+}
+
+// secure says whether the broker is served over https, as anywhere but this machine.
+func (b *Broker) secure() bool {
+	return strings.HasPrefix(b.config.BaseURL, "https://")
 }
 
 // securityHeaders keeps states and codes in URLs from leaking, and stops these pages being framed.
-func securityHeaders(next http.Handler) http.Handler {
+func securityHeaders(next http.Handler, secure bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Cache-Control", "no-store")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
+		if secure {
+			// Browsers then refuse plain http here, so nobody on the network can plant a binding cookie.
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		h.Set("Content-Security-Policy", noFormsCSP)
 		next.ServeHTTP(w, r)
 	})
@@ -337,16 +346,31 @@ func (b *Broker) startSignIn(w http.ResponseWriter, r *http.Request, req authReq
 // bindingCookie ties a sign-in to the browser that started it, so that someone can't trick another
 // person's browser into finishing the attacker's sign-in. Each sign-in has its own, so several tabs
 // can sign in at once.
+//
+// Over https, the cookie gets the __Host- prefix, so that browsers accept it only from this host, over
+// https, for the whole site. That stops a sibling subdomain setting one. The prefix requires Path=/.
 func (b *Broker) bindingCookie(state, value string, maxAge int) *http.Cookie {
-	return &http.Cookie{
-		Name:     bindingPrefix + hash(state)[:16],
+	cookie := &http.Cookie{
+		Name:     b.bindingCookieName(state),
 		Value:    value,
 		Path:     "/callback",
 		MaxAge:   maxAge,
 		HttpOnly: true,
-		Secure:   strings.HasPrefix(b.config.BaseURL, "https://"),
 		SameSite: http.SameSiteLaxMode,
 	}
+	if b.secure() {
+		cookie.Secure = true
+		cookie.Path = "/"
+	}
+	return cookie
+}
+
+func (b *Broker) bindingCookieName(state string) string {
+	name := bindingPrefix + hash(state)[:16]
+	if b.secure() {
+		return "__Host-" + name
+	}
+	return name
 }
 
 func (b *Broker) callback(w http.ResponseWriter, r *http.Request) {
@@ -380,7 +404,7 @@ func (b *Broker) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookie, err := r.Cookie(bindingPrefix + hash(state)[:16])
+	cookie, err := r.Cookie(b.bindingCookieName(state))
 	if err != nil || !equalSecrets(hash(cookie.Value), pending.BindingHash) {
 		base.Reason = reasonBrowserMismatch
 		b.record(ctx, base)
