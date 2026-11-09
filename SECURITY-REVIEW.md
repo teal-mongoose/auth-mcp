@@ -143,16 +143,24 @@ Two small safeguards have no test, because nothing can reach them today: tools r
 admin scope, and events being saved after a client hangs up. The mutation runs were scripts outside the repo,
 so they won't rerun automatically.
 
-## What can't be known until Step A
+## Settled by Step A, on 2026-11-09
 
-- How Google, Microsoft and Okta really behave, including the exact issuer and endpoints each one's discovery
-  document gives. If they differ from what's pinned, connections will fail to set up rather than be unsafe.
-- Real token signing. The emulator doesn't check custom token signatures or expiry.
-- That a real session keeps the `org` claim through a refresh, and that it overrides a stored one.
-- That revoking a session locks an admin out. With the emulator on, the SDK always checks, so a test can't
-  tell whether the server asked it to.
-- What Firebase stores as the `microsoft.com` uid. That decides whether Microsoft users can ever be matched
-  automatically.
-- How `list_users` handles a bad page token.
+`go test -tags=live` against the throwaway project `auth-mcp-test-1` showed these on real Firebase and Firestore:
+
+- Custom tokens are really signed, through Google's IAM API with no key file, and real Firebase accepts them. It
+  refuses a tampered one.
+- Unsigned and wrongly signed ID tokens are refused, so the server isn't in emulator mode.
+- A session's `org` claim replaces a stored one and survives a refresh, and stored claims carry over.
+- Revoking a session locks an admin out because the server checks: the plain check still accepted the revoked
+  token. This was the one mutation the emulator couldn't catch.
+- Every tool's query runs on real Firestore without extra indexes, and a code works once under real transactions.
+- `list_users` with an unknown page token lists from wherever it would sort, rather than failing. That's harmless
+  for a read-only admin tool.
+
+## What still can't be known
+
+- How Google behaves in a real sign-in, which needs a person: see `STEP-A.md`, section 3.
+- How Microsoft and Okta behave, including what Firebase stores as the `microsoft.com` uid. That decides
+  whether Microsoft users can ever be matched automatically.
 - The final step of the mix-up attack at a real provider. The fix doesn't depend on that, because the code
   never reaches the other connection.

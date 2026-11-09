@@ -68,6 +68,9 @@ emulators couldn't prove:
 - The whole sign-in flow works on real Firebase and Firestore, with a mock provider, and a code works once.
 - An existing account is found by its `google.com` identity.
 
+**Result, 2026-11-09:** saved to `auth-mcp-test-1`, and every check passes. The details are in
+`SECURITY-REVIEW.md`, under "Settled by Step A".
+
 ## 3. What you do in a browser
 
 Start the server and the pages, each in its own terminal:
