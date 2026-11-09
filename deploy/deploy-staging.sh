@@ -1,13 +1,18 @@
 #!/bin/bash
 # Deploys the auth-mcp server to staging (STAGING.md): builds its image in Cloud Build and deploys it to
-# Cloud Run. Run from Git Bash, after deploy/staging-setup.sh, with `gcloud auth login` as an owner of the
-# project.
+# Cloud Run. Run from Git Bash, after deploy/staging-setup.sh. Runs as the teal mongoose account
+# (deploy/teal-mongoose.sh).
 #
 #   deploy/deploy-staging.sh
 #
 # What's built is the repo as committed (git archive of HEAD), so uncommitted changes and git-ignored files
 # such as .env.live and .env.staging never leave this PC. The image is tagged with the commit.
 set -euo pipefail
+
+# Always as the teal mongoose account, through its own gcloud profile.
+if [ -z "${AUTH_MCP_TEAL_MONGOOSE:-}" ]; then
+	exec "$(dirname "$0")/teal-mongoose.sh" "$0" "$@"
+fi
 
 PROJECT=auth-mcp-staging
 REGION=us-central1

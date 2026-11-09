@@ -6,7 +6,8 @@ and `../mcp-auth-plan.md` for the plan and its decisions.
 - **No real Firebase projects except a throwaway `auth-mcp-test-...` one and `auth-mcp-staging`.** This PC's
   default credentials can reach real projects, so never loosen the project check in `internal/live` beyond
   naming a project exactly. No service account keys. Deploys go only to staging, through `deploy/`, with the
-  owner's go-ahead (see `STAGING.md`). Don't read `.env.live`, and don't enter passwords: the owner does Google sign-ins. Moving past
+  owner's go-ahead (see `STAGING.md`). Staging belongs to the teal mongoose account: run anything against it
+  through `deploy/teal-mongoose.sh`, never as a healthspaces.com account. Don't read `.env.live`, and don't enter passwords: the owner does Google sign-ins. Moving past
   this is Steps A-C in the plan, and each needs the owner's go-ahead.
 - **Don't change `@teal-mongoose/core` from this work.** It stays as it is until this server is ready
   to deploy.

@@ -34,18 +34,19 @@ Differences from running on this PC:
 
 ## 1. What you set up
 
-Do all of this signed in to the console as the teal mongoose account, which owns the project. It's a single
-Google account with no organization, which changes two things: the sign-in client can't be **Internal**, so the
-broker's own domain check is what keeps sign-in to `healthspaces.com`; and this PC's `gcloud`, signed in as
-`software@healthspaces.com`, needs to be made an Owner.
+Do all of this as the teal mongoose account, which owns everything here. No healthspaces.com account has
+access to the project. Because it's a single Google account with no organization, the sign-in client can't be
+**Internal**, so the broker's own domain check is what keeps sign-in to `healthspaces.com`.
 
 1. **Create the project** at the [Google Cloud console](https://console.cloud.google.com/projectcreate), with
    the id `auth-mcp-staging` exactly (click Edit under the name to set it). Location is "No organization". Link a
    billing account owned by teal mongoose: Cloud Run and Cloud Build need it. If the id is taken, tell me the one
    you get, because the server only accepts this exact name.
-2. **Make `software@healthspaces.com` an Owner:** IAM & Admin > IAM > Grant access, role **Owner**. Google
-   emails it an invitation, which must be accepted from that inbox before it takes effect. That account is
-   already a verified owner of `healthspaces.io`, which the address mapping needs.
+2. **Verify `healthspaces.io` for the teal mongoose account,** which the address mapping needs. In
+   [Search Console](https://search.google.com/search-console), add a property of type **Domain**,
+   `healthspaces.io`. It shows a TXT record: add it at GoDaddy for `healthspaces.io` (type **TXT**, name `@`, the
+   value it gives), then click Verify. It can take a few minutes. It sits beside any other TXT records, and
+   changes nothing else.
 3. **Add Firebase to it** in the [Firebase console](https://console.firebase.google.com): Create a project, then
    near the bottom, **Add Firebase to a Google Cloud project**, and pick `auth-mcp-staging`. Google Analytics
    isn't needed. Then:
@@ -68,6 +69,19 @@ broker's own domain check is what keeps sign-in to `healthspaces.com`; and this 
    the secret as its value and the other settings left as they are. Please don't paste it into chat.
 6. **Fill in `.env.staging`.** Copy `.env.staging.example` to `.env.staging`, in this folder, and add the
    client ID and the `apiKey`. Git ignores it.
+7. **Sign this PC in as the teal mongoose account,** in a gcloud profile of its own. This PC's usual gcloud
+   account is left as it is, and the staging scripts refuse to run as a healthspaces.com account. From Git
+   Bash, in `C:\hStuff\auth-mcp`, run each of these and sign in as teal mongoose in the browser that opens:
+
+   ```bash
+   deploy/teal-mongoose.sh gcloud auth login
+   ```
+
+   ```bash
+   deploy/teal-mongoose.sh gcloud auth application-default login
+   ```
+
+   The profile lives in `%APPDATA%\teal-mongoose`.
 
 Then tell me it's done.
 
@@ -85,7 +99,7 @@ Then tell me it's done.
 2. **I save the settings to Firestore,** from this PC:
 
    ```bash
-   go run ./cmd/auth-setup -env-file .env.staging save
+   deploy/teal-mongoose.sh go run ./cmd/auth-setup -env-file .env.staging save
    ```
 
 3. **I deploy:**
@@ -97,10 +111,8 @@ Then tell me it's done.
 4. **I map the address:**
 
    ```bash
-   gcloud beta run domain-mappings create --service auth-mcp --domain auth-staging.healthspaces.io --region us-central1 --project auth-mcp-staging
+   deploy/teal-mongoose.sh gcloud beta run domain-mappings create --service auth-mcp --domain auth-staging.healthspaces.io --region us-central1 --project auth-mcp-staging
    ```
-
-   This runs as `software@healthspaces.com`, which is a verified owner of `healthspaces.io`.
 
 5. **You add the DNS record at GoDaddy,** for `healthspaces.io`: type **CNAME**, name `auth-staging`, value
    `ghs.googlehosted.com.` Google then issues a certificate, which can take 15 minutes to an hour.

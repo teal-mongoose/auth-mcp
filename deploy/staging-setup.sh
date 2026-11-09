@@ -1,11 +1,16 @@
 #!/bin/bash
 # One-time setup of the staging project for deploys (STAGING.md). Safe to run again: it creates only
-# what's missing and re-applies the same roles. Needs `gcloud auth login` as an owner of the project, and
-# Firestore already created. It never sees the client secret: that's added by hand in the console, before or
+# what's missing and re-applies the same roles. Runs as the teal mongoose account (deploy/teal-mongoose.sh),
+# and needs Firestore already created. It never sees the client secret: that's added by hand in the console, before or
 # after this runs.
 #
 #   deploy/staging-setup.sh
 set -euo pipefail
+
+# Always as the teal mongoose account, through its own gcloud profile.
+if [ -z "${AUTH_MCP_TEAL_MONGOOSE:-}" ]; then
+	exec "$(dirname "$0")/teal-mongoose.sh" "$0" "$@"
+fi
 
 PROJECT=auth-mcp-staging
 REGION=us-central1
