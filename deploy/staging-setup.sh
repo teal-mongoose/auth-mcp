@@ -7,7 +7,7 @@
 #   deploy/staging-setup.sh
 set -euo pipefail
 
-PROJECT=auth-mcp-staging-tm
+PROJECT=auth-mcp-staging
 REGION=us-central1
 REPO=auth-mcp
 RUN_SA=auth-mcp-run@$PROJECT.iam.gserviceaccount.com

@@ -9,7 +9,7 @@
 # such as .env.live and .env.staging never leave this PC. The image is tagged with the commit.
 set -euo pipefail
 
-PROJECT=auth-mcp-staging-tm
+PROJECT=auth-mcp-staging
 REGION=us-central1
 SERVICE=auth-mcp
 RUN_SA=auth-mcp-run@$PROJECT.iam.gserviceaccount.com
